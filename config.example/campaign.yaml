@@ -51,5 +51,13 @@ attachments_root: /path/to/your/attachments
 
 # `attachments` until documents are hosted on the sending domain; then flip to
 # `links` and let the A/B settle which performs better.
+# Attachment ceilings, in wire bytes (base64, which is what a gateway measures).
+#
+# max_attachment_bytes: hard limit at config load. how large a set may be at all.
+# campaign_max_attachment_bytes: gates a campaign start, checked separately so
+#   the loosened test ceiling above cannot leak into real sending.
+#max_attachment_bytes: 5000000
+campaign_max_attachment_bytes: 5000000
+
 step1_variant: attachments
 links_base_url: null

@@ -170,3 +170,50 @@ def test_disabled_mailbox_placeholder_does_not_block(config_root):
     path.write_text(path.read_text().replace(
         "      address: you@sending-domain.com", "      address: jai@SENDING-DOMAIN-TBD.com"))
     assert Config(config_root).preflight("campaign") == []
+
+
+def _oversize(config_root, mb: int = 8) -> None:
+    from pathlib import Path
+    cfg = Config(config_root)
+    (Path(cfg.campaign.attachments_root) / "_first_email" / "example_document_a.pdf"
+     ).write_bytes(b"x" * (mb * 1_000_000))
+
+
+def test_raised_load_cap_lets_a_heavy_set_load(config_root):
+    """A loosened ceiling exists so a heavy set can go out on test sends, which
+    only ever reach an address the operator controls."""
+    _oversize(config_root)
+    path = config_root / "campaign.yaml"
+    path.write_text(path.read_text() + "\nmax_attachment_bytes: 20000000\n")
+    Config(config_root)   # must not raise
+
+
+def test_raised_load_cap_does_not_leak_into_campaigns(config_root):
+    """The whole point of the split: raising one ceiling must not raise the other."""
+    _oversize(config_root)
+    path = config_root / "campaign.yaml"
+    path.write_text(path.read_text() + "\nmax_attachment_bytes: 20000000\n")
+    blockers = Config(config_root).preflight("campaign")
+    assert any("campaign_max_attachment_bytes" in b for b in blockers)
+    assert any("must not ship a set this size to strangers" in b for b in blockers)
+
+
+def test_campaign_gate_is_independently_configurable(config_root):
+    _oversize(config_root)
+    path = config_root / "campaign.yaml"
+    path.write_text(path.read_text()
+                    + "\nmax_attachment_bytes: 20000000\n"
+                    + "campaign_max_attachment_bytes: 20000000\n")
+    assert Config(config_root).preflight("campaign") == []
+
+
+def test_test_mode_preflight_ignores_the_campaign_attachment_gate(config_root):
+    _oversize(config_root)
+    path = config_root / "campaign.yaml"
+    path.write_text(path.read_text() + "\nmax_attachment_bytes: 20000000\n")
+    cfg = Config(config_root)
+    assert not any("campaign_max_attachment_bytes" in b for b in cfg.preflight("test"))
+
+
+def test_within_limits_config_has_no_attachment_blocker(config: Config):
+    assert not any("attachment" in b for b in config.preflight("campaign"))

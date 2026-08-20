@@ -57,8 +57,9 @@ def validate_config(config: Optional[str] = typer.Option(None, "--config")):
     typer.echo(f"  sequence:    {' -> '.join(s.id for s in cfg.sequence.steps)}")
     typer.echo(f"  dorks:       {len(cfg.dorks)} search seeds")
     typer.echo(f"  templates:   hash {templates.template_hash(cfg)}")
-    typer.echo(f"  attachments: max {cfg.campaign.max_attachment_bytes/1_000_000:.2f} MB "
-               f"on the wire per set")
+    typer.echo(f"  attachments: {cfg.campaign.max_attachment_bytes/1_000_000:.2f} MB max at "
+               f"load (test sends), {cfg.campaign.campaign_max_attachment_bytes/1_000_000:.2f} "
+               f"MB gate for campaign start")
     if cfg.campaign.verification.catch_all_share_is_placeholder:
         typer.secho(
             "  note: verification.catch_all_daily_share is still flagged a placeholder. "

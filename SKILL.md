@@ -78,10 +78,12 @@ Milestones 4 onward add: `discover`, `verify`, `review`, `send_queue`, `watch_re
 
 **Two gates block a campaign and are not to be worked around.** `validate-config` exits
 non-zero while any campaign blocker is unresolved — a placeholder mailing address is one,
-since CAN-SPAM requires a real one and the footer ships on every template. And an
-attachment set over `max_attachment_bytes` (wire size, default 5 MB) hard-fails at config
-load, because an oversized set bounces for reasons unrelated to address quality and can
-trip the circuit breaker on a false signal.
+since CAN-SPAM requires a real one and the footer ships on every template. And attachment size is
+capped twice, in wire bytes: `max_attachment_bytes` hard-fails at config load, while
+`campaign_max_attachment_bytes` gates a campaign start separately — so a ceiling loosened
+to let a heavy set out on a test send cannot leak into real sending. An oversized set
+bounces for reasons unrelated to address quality and can trip the circuit breaker on a
+false signal.
 
 ## Running discovery
 

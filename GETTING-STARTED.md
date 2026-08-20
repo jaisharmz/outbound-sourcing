@@ -252,8 +252,16 @@ with no source URL or written as a fragment rather than a sentence.
 
 **`attachment set 'x' is N MB on the wire, over the ... limit`** — base64 inflates by 4/3
 and gateways measure the encoded size. The error prints a per-file breakdown and tells you
-what dropping the largest file would leave. Fix the files; raise `max_attachment_bytes`
-only as a deliberate decision.
+what dropping the largest file would leave.
+
+There are two ceilings and they are independent on purpose:
+
+| key | when | why |
+|---|---|---|
+| `max_attachment_bytes` | config load | Hard limit. Raise it to let a heavy set out on a **test** send, which only reaches an address you control. |
+| `campaign_max_attachment_bytes` | campaign start | Gates real sending. Raising the ceiling above does not raise this one. |
+
+Fix the files rather than raising either as a matter of habit.
 
 **`CAMPAIGN BLOCKERS`** — the config is structurally valid but something in it must not
 reach a stranger, most often a placeholder mailing address. Test sends to yourself still

@@ -110,6 +110,20 @@ The system supports both and settles the question with data:
 Run it as a real split, not a switch flipped once, and give it enough volume to say
 something.
 
+**The attachments arm is two files plus a link, not three files.** The portfolio is
+published on the landing page rather than attached: it is browsed rather than read
+linearly, it is the single file most likely to trip a strict gateway, and a link produces
+an open signal an attachment cannot. So the arm under test is:
+
+| arm | first touch |
+|---|---|
+| attachments | resume + technical doc attached (~1 MB wire), portfolio linked |
+| links | all three linked, nothing attached |
+
+That comparison is worth running because it isolates *attaching anything at all* against
+*attaching nothing*. Comparing against a three-file 19 MB set would instead have measured
+gateway size limits, which is a known answer and not the question.
+
 **Both arms run in the seed send.** The seed sends are gated on the domains being ready,
 and the landing page lives on the sending domain — so by the time seeds go out, the links
 arm exists too. Spending the first placement measurement on a single variant wastes it:

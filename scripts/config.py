@@ -212,7 +212,17 @@ class Campaign(Strict):
     # some above 5 MB, so an oversized attachment set hard-bounces for reasons
     # that have nothing to do with address quality -- contaminating bounce rate
     # and potentially tripping the circuit breaker on a false signal.
+    # Two ceilings, deliberately independent.
+    #
+    # max_attachment_bytes is the hard load-time limit. It may be raised to let
+    # a heavy set go out on *test* sends, which only ever reach an address you
+    # control.
+    #
+    # campaign_max_attachment_bytes gates a campaign start and is checked
+    # separately in preflight(), so a loosened test ceiling cannot leak into
+    # real sending. Raising one does not raise the other.
     max_attachment_bytes: int = 5_000_000
+    campaign_max_attachment_bytes: int = 5_000_000
     # Until a sending domain exists there is nowhere aligned to host the docs,
     # so step 1 ships attachments. The A/B starts at milestone 8.
     step1_variant: Literal["attachments", "links"] = "attachments"
@@ -545,8 +555,25 @@ class Config:
                     f"{mb.from_.address}"
                 )
 
-        if mode == "campaign" and self.campaign.step1_variant == "links" and not self.campaign.links_base_url:
-            blockers.append("step1_variant is 'links' but links_base_url is unset")
+        if mode == "campaign":
+            limit = self.campaign.campaign_max_attachment_bytes
+            root = Path(self.campaign.attachments_root).expanduser()
+            for name, aset in self.sequence.attachment_sets.items():
+                total = wire_size(sum(
+                    (root / aset.dir / f).stat().st_size
+                    for f in aset.files
+                    if (root / aset.dir / f).exists()
+                ))
+                if total > limit:
+                    blockers.append(
+                        f"attachment set {name!r} is {human(total)} on the wire, over the "
+                        f"{human(limit)} campaign_max_attachment_bytes gate. "
+                        f"max_attachment_bytes may be higher to allow test sends, but a "
+                        f"campaign must not ship a set this size to strangers."
+                    )
+
+            if self.campaign.step1_variant == "links" and not self.campaign.links_base_url:
+                blockers.append("step1_variant is 'links' but links_base_url is unset")
 
         return blockers
 
