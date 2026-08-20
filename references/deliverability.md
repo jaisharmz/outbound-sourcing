@@ -43,8 +43,19 @@ Cold sends go `From:` the dedicated sending domain with `Reply-To:` the address 
 sender actually reads. This keeps a primary or institutional address out of the
 reputation blast radius while still being the address people answer.
 
-Two things to check the first time this is configured, both visible in the raw headers
-that `test-email` prints:
+**Authentication cannot be measured by mailing yourself.** A message from an account to
+itself through the same provider never crosses an authentication boundary, so no
+`Authentication-Results`, `Received-SPF` or `DKIM-Signature` header is ever added. The
+delivered copy looks fine and tells you nothing. Use `--to` with a receiver on a different
+provider:
+
+```
+outbound test-email --mailbox <id> --to you@outlook.com                 # placement + verdicts
+outbound test-email --mailbox <id> --to <one-time@mail-tester.com>      # full report
+```
+
+Two things to check the first time this is configured, both visible in the raw headers at
+the *receiving* end:
 
 - **SPF/DKIM/DMARC align against the `From:` domain**, not the Reply-To. A misaligned
   Reply-To is normal and harmless; a misaligned From is the whole problem.

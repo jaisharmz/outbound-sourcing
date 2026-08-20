@@ -324,6 +324,7 @@ def test_email(
     step: str = typer.Option("step1_initial", "--step"),
     campaign: Optional[str] = typer.Option(None, "--campaign"),
     all_mailboxes: bool = typer.Option(False, "--all-mailboxes"),
+    to: Optional[str] = typer.Option(None, "--to", help="override test_recipient"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
     wait: int = typer.Option(30, "--wait", help="seconds to wait for the delivered copy"),
@@ -357,14 +358,14 @@ def test_email(
 
     failures = 0
     for mailbox_id in targets:
-        if not _one_test_send(cfg, conn, mailbox_id, step, campaign, wait):
+        if not _one_test_send(cfg, conn, mailbox_id, step, campaign, wait, to):
             failures += 1
     if failures:
         raise typer.Exit(1)
 
 
 def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
-                   campaign: Optional[str], wait: int) -> bool:
+                   campaign: Optional[str], wait: int, to_override: str | None = None) -> bool:
     mb = cfg.mailboxes.get(mailbox_id)
 
     # Check credentials before rendering. With --all-mailboxes an unauthorized
@@ -383,7 +384,7 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
         return False
 
     contact, account = _fixture_contact()
-    to = cfg.campaign.test_recipient
+    to = to_override or cfg.campaign.test_recipient
     contact["email"] = to
 
     rendered = _render_for(cfg, conn, step_id, contact, account, campaign,
@@ -450,12 +451,24 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
             "UPDATE test_sends SET headers = ? WHERE id = (SELECT MAX(id) FROM test_sends)",
             ((result.headers or "") + "\n\n--- delivered ---\n" + delivered,),
         )
-        _summarize_auth(delivered)
+        if not any(l.lower().startswith("authentication-results") for l in delivered.splitlines()):
+            typer.secho(
+                "\n  NO AUTHENTICATION RESULTS ON THIS MESSAGE.\n"
+                "  A message sent from an account to itself through the same provider never\n"
+                "  crosses an authentication boundary, so nothing evaluates SPF, DKIM or\n"
+                "  DMARC. Alignment cannot be measured this way.\n"
+                "  Send to a receiver on another provider instead:\n"
+                "    --to <address>@outlook.com          placement plus real verdicts\n"
+                "    --to <one-time address from mail-tester.com>   full report incl. DMARC",
+                fg=typer.colors.YELLOW,
+            )
+        else:
+            _summarize_auth(delivered)
     else:
         typer.secho(
-            "\n  no delivered copy found in this mailbox. That is expected when "
-            "test_recipient is a different account -- open the message in Gmail and use "
-            "'Show original' to read Authentication-Results.",
+            "\n  no delivered copy found in this mailbox. Expected when the recipient is a "
+            "different account -- which is also the only way to get real SPF/DKIM/DMARC "
+            "verdicts. Open the message at the receiving end and use 'Show original'.",
             fg=typer.colors.YELLOW,
         )
     return True

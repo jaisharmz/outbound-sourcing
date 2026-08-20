@@ -109,9 +109,16 @@ footer, headers — sends it to `test_recipient`, and prints:
 - the resolved CC/BCC and the recipient count the daily cap will charge
 - attachment paths, sizes, and the total **wire** size after base64
 - the outgoing headers
-- the **delivered** headers, when the test recipient is the same account, with SPF, DKIM
-  and DMARC verdicts read off `Authentication-Results` — those exist only on the received
-  copy, never on the sent one
+- the **delivered** headers, fetched by exact Message-ID match
+
+To get SPF/DKIM/DMARC verdicts you must send to **another provider** — a message from an
+account to itself never crosses an authentication boundary, so no verdict headers are
+added at all:
+
+```bash
+.venv/bin/python -m scripts.outbound test-email --mailbox <id> --to you@outlook.com
+.venv/bin/python -m scripts.outbound test-email --mailbox <id> --to <one-time@mail-tester.com>
+```
 
 Every test send is recorded in `test_sends` with a template hash. The scheduler refuses to
 send from a mailbox that has never passed one, and refuses to start a campaign whose
