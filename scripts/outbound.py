@@ -433,7 +433,14 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
     if hasattr(provider, "delivered_headers") and wait > 0:
         typer.echo(f"\n  waiting up to {wait}s for the delivered copy "
                    f"(SPF/DKIM/DMARC results only exist on it, not on the sent copy)...")
-        delivered = provider.delivered_headers(rendered.subject, timeout_seconds=wait)
+        try:
+            delivered = provider.delivered_headers(
+                rendered.subject, timeout_seconds=wait, message_id=result.message_id
+            )
+        except Exception as exc:
+            # The send already succeeded. Failing to read the delivered copy is
+            # a lost convenience, not a failed send, and must not report as one.
+            typer.secho(f"  could not read the delivered copy: {exc}", fg=typer.colors.YELLOW)
 
     if delivered:
         typer.echo("\n  --- delivered headers ---")

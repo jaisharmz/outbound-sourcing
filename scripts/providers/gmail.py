@@ -230,7 +230,8 @@ class GmailMailbox(MailboxProvider):
 
     # ------------------------------------------------------- delivered copy
 
-    def delivered_headers(self, subject: str, timeout_seconds: int = 30) -> str | None:
+    def delivered_headers(self, subject: str, timeout_seconds: int = 30,
+                          message_id: str | None = None) -> str | None:
         """Fetch the *received* copy's headers, if it landed in this mailbox.
 
         SPF/DKIM/DMARC results only exist on the delivered message -- the sent
@@ -238,7 +239,9 @@ class GmailMailbox(MailboxProvider):
         account that sent, this is how alignment gets confirmed for real.
         """
         _, _, _, _, HttpError = _require_google()
-        query = f'subject:"{subject}" newer_than:1d'
+        # rfc822msgid is exact; the subject is the fallback.
+        query = (f"rfc822msgid:{message_id.strip('<>')}" if message_id
+                 else f'subject:"{subject}" newer_than:1d')
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             try:

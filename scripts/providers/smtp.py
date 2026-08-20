@@ -20,7 +20,7 @@ import smtplib
 import ssl
 from datetime import datetime, timezone
 from email.message import EmailMessage
-from email.utils import formataddr, parseaddr, parsedate_to_datetime
+from email.utils import formataddr, make_msgid, parseaddr, parsedate_to_datetime
 
 from ..config import Mailbox
 from ..templates import RenderedEmail
@@ -106,6 +106,10 @@ class SMTPMailbox(MailboxProvider):
         if email_obj.reply_to:
             msg["Reply-To"] = email_obj.reply_to
         msg["Subject"] = email_obj.subject
+        # Generated here, not left to the server. Reply matching over IMAP works
+        # by finding our Message-ID in a reply's In-Reply-To/References, so an
+        # ID we never saw is an ID we can never match against.
+        msg["Message-ID"] = make_msgid(domain=addr.partition("@")[2] or None)
         msg["X-Outbound-Variant"] = email_obj.variant
         msg["X-Outbound-Step"] = email_obj.step_id
         msg.set_content(email_obj.body)
@@ -144,7 +148,8 @@ class SMTPMailbox(MailboxProvider):
 
     # ------------------------------------------------------- delivered copy
 
-    def delivered_headers(self, subject: str, timeout_seconds: int = 30) -> str | None:
+    def delivered_headers(self, subject: str, timeout_seconds: int = 30,
+                          message_id: str | None = None) -> str | None:
         """Read the received copy's headers over IMAP.
 
         SPF/DKIM/DMARC verdicts exist only on the delivered message. When the
@@ -153,31 +158,45 @@ class SMTPMailbox(MailboxProvider):
         """
         import time
 
+        # Message-ID is exact; subject is the fallback for servers that rewrite
+        # it. Both are quoted -- an unquoted subject with spaces or punctuation
+        # is what "SEARCH command error: BAD Could not parse command" means.
+        criteria = []
+        if message_id:
+            criteria.append(("HEADER", "Message-ID", _imap_quote(message_id)))
+        criteria.append(("HEADER", "Subject", _imap_quote(subject)))
+
         deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
+        while True:
             try:
                 conn = self._imap()
-            except Exception:
-                return None
-            try:
-                conn.select("INBOX")
-                typ, data = conn.search(None, "HEADER", "Subject", subject)
-                ids = data[0].split() if data and data[0] else []
-                if ids:
-                    typ, raw = conn.fetch(ids[-1], "(BODY.PEEK[HEADER])")
-                    blob = raw[0][1].decode("utf-8", "replace")
-                    parsed = email.message_from_string(blob)
-                    order = {h.lower(): i for i, h in enumerate(AUTH_HEADERS)}
-                    items = [(k, v) for k, v in parsed.items() if k.lower() in order]
-                    items.sort(key=lambda kv: order[kv[0].lower()])
-                    return "\n".join(f"{k}: {v}" for k, v in items)
-            finally:
                 try:
-                    conn.logout()
-                except Exception:
-                    pass
+                    conn.select("INBOX")
+                    for crit in criteria:
+                        typ, data = conn.search(None, *crit)
+                        ids = data[0].split() if data and data[0] else []
+                        if not ids:
+                            continue
+                        typ, raw = conn.fetch(ids[-1], "(BODY.PEEK[HEADER])")
+                        blob = raw[0][1].decode("utf-8", "replace")
+                        parsed = email.message_from_string(blob)
+                        order = {h.lower(): i for i, h in enumerate(AUTH_HEADERS)}
+                        items = [(k, v) for k, v in parsed.items() if k.lower() in order]
+                        items.sort(key=lambda kv: order[kv[0].lower()])
+                        return "\n".join(f"{k}: {v}" for k, v in items)
+                finally:
+                    try:
+                        conn.logout()
+                    except Exception:
+                        pass
+            except Exception:
+                # Reading the delivered copy is a convenience. The send already
+                # succeeded, and losing the header dump must not look like a
+                # failed send.
+                return None
+            if time.time() >= deadline:
+                return None
             time.sleep(3)
-        return None
 
     # ----------------------------------------------------------- replies
 
@@ -252,6 +271,11 @@ class SMTPMailbox(MailboxProvider):
                 conn.logout()
             except Exception:
                 pass
+
+
+def _imap_quote(value: str) -> str:
+    """Quote a string for an IMAP SEARCH argument."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _explain(exc: Exception) -> str:

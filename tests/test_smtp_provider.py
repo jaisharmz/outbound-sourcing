@@ -81,3 +81,56 @@ def test_permanent_failures_are_not_marked_retryable():
     )
     assert "535" in _explain(smtplib.SMTPAuthenticationError(535, b"bad credentials"))
     assert "refused" in _explain(smtplib.SMTPRecipientsRefused({"a@b.test": (550, b"no")}))
+
+
+def test_message_id_is_set_by_us_not_the_server(config, mailbox):
+    """Reply matching finds our Message-ID in a reply's In-Reply-To. An ID the
+    server assigned and we never saw is an ID we can never match against."""
+    email = render(config, config.sequence.steps[0], contact=CONTACT, account=ACCOUNT,
+                   to="ada@target.test", from_header=mailbox.mailbox.from_.header())
+    msg = mailbox.build_mime(email)
+    assert msg["Message-ID"]
+    assert msg["Message-ID"].startswith("<") and msg["Message-ID"].endswith(">")
+    assert "sending-domain.test" in msg["Message-ID"]
+
+
+def test_message_ids_are_unique_per_message(config, mailbox):
+    email = render(config, config.sequence.steps[0], contact=CONTACT, account=ACCOUNT,
+                   to="ada@target.test", from_header=mailbox.mailbox.from_.header())
+    assert mailbox.build_mime(email)["Message-ID"] != mailbox.build_mime(email)["Message-ID"]
+
+
+def test_send_result_carries_the_message_id(config, mailbox, monkeypatch):
+    sent = {}
+
+    class FakeSMTP:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def send_message(self, msg, from_addr=None, to_addrs=None):
+            sent["msg"], sent["to"] = msg, to_addrs
+
+    monkeypatch.setattr(mailbox, "_smtp", lambda: FakeSMTP())
+    email = render(config, config.sequence.steps[0], contact=CONTACT, account=ACCOUNT,
+                   to="ada@target.test", cc=["c@x.test"], bcc=["secret@x.test"],
+                   from_header=mailbox.mailbox.from_.header())
+    result = mailbox.send(email)
+    assert result.ok
+    assert result.message_id == sent["msg"]["Message-ID"]
+    # Bcc is in the envelope only.
+    assert sent["to"] == ["ada@target.test", "c@x.test", "secret@x.test"]
+    assert sent["msg"]["Bcc"] is None
+
+
+def test_imap_search_arguments_are_quoted():
+    """An unquoted subject with spaces is 'SEARCH command error: BAD'."""
+    from scripts.providers.smtp import _imap_quote
+    assert _imap_quote("a b / c?") == '"a b / c?"'
+    assert _imap_quote('say "hi"') == '"say \\"hi\\""'
+
+
+def test_delivered_header_failure_returns_none_not_an_exception(mailbox, monkeypatch):
+    """The send already succeeded; losing the header dump is not a failed send."""
+    def boom():
+        raise RuntimeError("imap exploded")
+    monkeypatch.setattr(mailbox, "_imap", boom)
+    assert mailbox.delivered_headers("subject", timeout_seconds=0) is None
