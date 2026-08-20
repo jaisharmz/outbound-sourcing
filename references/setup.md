@@ -119,6 +119,26 @@ but the Gmail scopes here are sensitive/restricted, so production status invites
 verification process. Domain-wide delegation sidesteps that question entirely for domains
 you own.
 
+### 4c. If OAuth stays blocked: app password over SMTP
+
+Google's console can be slow or confusing about test users, and the harness does not need
+OAuth at all. An app password over SMTP has no consent screen, no verification review, no
+publishing status, and therefore no 7-day expiry:
+
+1. Enable 2-Step Verification on the account (required — app passwords are hidden without it).
+2. Create one at `myaccount.google.com/apppasswords`.
+3. Put it in `config/secrets.env` under the key the mailbox's `auth_ref` names.
+4. `python -m scripts.outbound test-email --mailbox <smtp mailbox id>`
+
+The SMTP provider sends with attachments, CC, Reply-To, and an envelope-only Bcc, and
+reads the delivered copy's `Authentication-Results` over IMAP — so it answers the
+SPF/DKIM/DMARC and From/Reply-To questions just as well as the Gmail API does.
+
+What it does not give is thread IDs, so reply detection falls back to matching
+`In-Reply-To`/`References`. That is why the Gmail API stays the preferred provider for the
+real pool, and why domain-wide delegation (4b) is the destination rather than either of
+these.
+
 ### 5. Landing page (before the links A/B)
 
 Host the first-touch documents on the sending domain, so the link domain aligns with the

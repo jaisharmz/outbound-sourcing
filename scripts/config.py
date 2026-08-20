@@ -270,6 +270,17 @@ class Mailbox(Strict):
     daily_cap: int = 40
     warmup_start_date: date | None = None
     enabled: bool = True
+    # SMTP/IMAP settings. Ignored by other providers. `username` defaults to the
+    # from address; auth_ref names the secrets.env key holding the password.
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    imap_host: str = "imap.gmail.com"
+    imap_port: int = 993
+    username: str | None = None
+
+    @property
+    def login(self) -> str:
+        return self.username or self.from_.address
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, str_strip_whitespace=True)
 

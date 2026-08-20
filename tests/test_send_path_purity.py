@@ -25,7 +25,8 @@ FORBIDDEN_PREFIXES = (
 
 # Entry points of the deterministic send path. Everything reachable from these
 # is in scope. As later milestones land, add their modules here.
-SEND_PATH_ENTRIES = ["providers", "templates", "cc", "suppression", "normalize", "db", "config"]
+SEND_PATH_ENTRIES = ["providers", "providers.gmail", "providers.smtp", "templates",
+                     "cc", "suppression", "normalize", "db", "config"]
 
 
 def module_file(name: str) -> Path | None:

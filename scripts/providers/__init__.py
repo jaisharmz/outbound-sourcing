@@ -99,7 +99,15 @@ def _load_gmail() -> None:
     register("gmail", GmailMailbox)
 
 
-_LAZY = {"gmail": _load_gmail}
+def _load_smtp() -> None:
+    if "smtp" in _REGISTRY:
+        return
+    from .smtp import SMTPMailbox
+
+    register("smtp", SMTPMailbox)
+
+
+_LAZY = {"gmail": _load_gmail, "smtp": _load_smtp}
 
 
 __all__ = [
