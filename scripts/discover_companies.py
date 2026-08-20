@@ -1,0 +1,412 @@
+"""Company discovery: three modes, one table.
+
+    list      a file of company names the operator supplies
+    vc        portfolio pages, researched agentically, handed here as a list
+    industry  wraps the `industry-research` skill
+
+All three land in `accounts`. Nothing downstream cares which mode produced a row.
+
+    python -m scripts.discover_companies --mode industry --run <dir>
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sqlite3
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from .config import Config, load_config
+from .db import log_event, open_db, transaction, utcnow
+from .errors import ConfigError
+from .normalize import normalize_company, registrable_domain
+
+# A landscape `url` is whatever the researcher cited as evidence. For NVIDIA that
+# is nvidia.com; for Google DeepMind it is an arXiv abstract, for Anthropic a
+# docs subdomain, for a university group a personal site or a GitHub repo.
+# Extracting a sending domain from those produces mail to a stranger at the
+# wrong company, so anything on this list yields no domain candidate at all.
+AGGREGATOR_DOMAINS = {
+    "arxiv.org", "github.com", "github.io", "gitlab.com", "huggingface.co",
+    "semanticscholar.org", "openreview.net", "biorxiv.org", "medrxiv.org",
+    "doi.org", "acm.org", "ieee.org", "springer.com", "nature.com",
+    "sciencedirect.com", "wikipedia.org", "linkedin.com", "x.com", "twitter.com",
+    "youtube.com", "medium.com", "substack.com", "notion.site",
+    "crunchbase.com", "pitchbook.com", "theinformation.com", "techcrunch.com",
+    "bloomberg.com", "reuters.com", "propublica.org", "forbes.com", "wired.com",
+    "arstechnica.com", "grantmaking.ai",
+}
+
+# Hosts that belong to a real company but host third-party content, so a link to
+# one says nothing about whose company it describes. Checked before the
+# registrable domain, since google.com itself is a legitimate target.
+AGGREGATOR_HOSTS = {
+    "docs.google.com", "drive.google.com", "sites.google.com",
+    "colab.research.google.com", "groups.google.com", "gist.github.com",
+}
+
+
+@dataclass
+class CompanyRecord:
+    name: str
+    tier: str | None = None
+    campaign: str | None = None
+    domain: str | None = None
+    domain_confidence: str = "unknown"
+    what: str | None = None
+    entry_note: str | None = None
+    ships: bool | None = None
+    subproblems: list[str] = field(default_factory=list)
+    evidence_url: str | None = None
+    source: str = "list"
+    source_ref: str | None = None
+    excluded_reason: str | None = None
+
+
+@dataclass
+class DiscoveryReport:
+    source: str = ""
+    source_ref: str = ""
+    added: int = 0
+    updated: int = 0
+    excluded: int = 0
+    skipped_tier: list[str] = field(default_factory=list)
+    no_domain: list[str] = field(default_factory=list)
+    degraded_run: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        lines = [
+            f"source:    {self.source} ({self.source_ref})",
+            f"accounts:  {self.added} added, {self.updated} updated, "
+            f"{self.excluded} recorded as excluded",
+        ]
+        if self.skipped_tier:
+            shown = ", ".join(sorted(set(self.skipped_tier))[:6])
+            lines.append(f"skipped by tier: {len(self.skipped_tier)} ({shown})")
+        if self.no_domain:
+            lines.append(
+                f"no domain candidate: {len(self.no_domain)} -- these need resolution "
+                f"before people discovery: {', '.join(self.no_domain[:5])}"
+                + (" ..." if len(self.no_domain) > 5 else "")
+            )
+        if self.degraded_run:
+            lines.append(
+                f"DEGRADED SOURCE RUN: {self.degraded_run}\n"
+                f"  Its roster is a floor, not a census. Companies nobody mentioned were "
+                f"never found. Accounts are marked degraded and re-queue."
+            )
+        for w in self.warnings:
+            lines.append(f"warning: {w}")
+        return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ industry
+
+
+def read_yaml_block(path: Path) -> dict[str, Any] | None:
+    """Pull the fenced YAML block out of an industry-research markdown file."""
+    if not path.exists():
+        return None
+    lines = path.read_text().splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if l.startswith("```yaml"))
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("```"))
+    except StopIteration:
+        return None
+    try:
+        data = yaml.safe_load("\n".join(lines[start + 1:end]))
+    except yaml.YAMLError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_run_json(run_dir: Path) -> dict[str, Any]:
+    """Read run.json leniently.
+
+    Its real shape has drifted from the schema in the skill's own docs -- it
+    gained `degraded`, `verification`, `corrections_applied`, `integrity_warning`
+    and `known_gaps`, and lost the documented `profile_hash`. Depend only on the
+    keys that have held.
+    """
+    path = run_dir / "run.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def domain_candidate(url: str | None) -> tuple[str | None, str]:
+    """Derive a sending domain from an evidence URL, or refuse to.
+
+    Returns (domain, confidence). Confidence is never better than 'candidate':
+    the URL was cited as evidence for a claim, not offered as a homepage.
+    """
+    if not url or not isinstance(url, str):
+        return None, "unknown"
+    match = re.match(r"^https?://([^/\s:]+)", url.strip())
+    if not match:
+        return None, "unknown"
+    host = match.group(1).lower().removeprefix("www.")
+    reg = registrable_domain(host)
+    if host in AGGREGATOR_HOSTS or reg in AGGREGATOR_DOMAINS or host.endswith(".github.io"):
+        return None, "aggregator"
+    # A path-bearing docs or blog subdomain is still that company's domain, but
+    # it is not necessarily where their mail lives.
+    return reg, "candidate"
+
+
+def from_industry_run(config: Config, run_dir: Path, tiers: set[str]) -> tuple[list[CompanyRecord], DiscoveryReport]:
+    run_dir = Path(run_dir).expanduser()
+    if not run_dir.is_dir():
+        raise ConfigError(f"not a directory: {run_dir}")
+
+    report = DiscoveryReport(source="industry", source_ref=str(run_dir))
+    meta = read_run_json(run_dir)
+    if meta.get("degraded"):
+        detail = meta["degraded"]
+        note = detail.get("websearch") if isinstance(detail, dict) else str(detail)
+        report.degraded_run = str(note)[:200]
+
+    block = read_yaml_block(run_dir / "landscape.md")
+    if not block:
+        report.warnings.append(
+            f"{run_dir/'landscape.md'} has no parseable YAML block; falling back to the "
+            f"key_companies lists in the avenue frontmatter, which carry names but no URLs"
+        )
+        return _from_avenue_frontmatter(run_dir, tiers, report), report
+
+    orgs = block.get("orgs") or []
+    if not isinstance(orgs, list):
+        report.warnings.append("landscape.md `orgs` is not a list; nothing imported")
+        return [], report
+
+    records: list[CompanyRecord] = []
+    for org in orgs:
+        if not isinstance(org, dict) or not org.get("name"):
+            continue
+        tier = str(org.get("tier") or "").strip()
+        if tiers and tier not in tiers:
+            report.skipped_tier.append(f"{org['name']} ({tier or 'no tier'})")
+            continue
+        domain, confidence = domain_candidate(org.get("url"))
+        if not domain:
+            report.no_domain.append(str(org["name"]))
+        sub = org.get("subproblems")
+        records.append(CompanyRecord(
+            name=str(org["name"]),
+            tier=tier or None,
+            campaign=config.campaigns.for_tier(tier) if tier else None,
+            domain=domain,
+            domain_confidence=confidence,
+            what=str(org["what"])[:1000] if org.get("what") else None,
+            entry_note=str(org["entry"])[:1000] if org.get("entry") else None,
+            ships=bool(org["ships"]) if isinstance(org.get("ships"), bool) else None,
+            subproblems=[str(x) for x in sub] if isinstance(sub, list) else [],
+            evidence_url=str(org.get("evidence") or org.get("url") or "") or None,
+            source="industry",
+            source_ref=str(run_dir),
+        ))
+
+    # Companies someone already decided against. Recorded so a later run does not
+    # quietly re-surface them.
+    for ex in block.get("excluded") or []:
+        if not isinstance(ex, dict) or not ex.get("name"):
+            continue
+        records.append(CompanyRecord(
+            name=str(ex["name"]),
+            source="industry",
+            source_ref=str(run_dir),
+            evidence_url=str(ex.get("evidence") or "") or None,
+            excluded_reason=str(ex.get("why") or "excluded by the source run")[:500],
+        ))
+    return records, report
+
+
+def _from_avenue_frontmatter(run_dir: Path, tiers: set[str],
+                             report: DiscoveryReport) -> list[CompanyRecord]:
+    """Fallback: key_companies from each avenue's YAML header. Names only."""
+    names: set[str] = set()
+    for path in sorted((run_dir / "avenues").glob("*.md")) if (run_dir / "avenues").is_dir() else []:
+        text = path.read_text()
+        match = re.match(r"\A---\n(.*?)\n---", text, re.S)
+        if not match:
+            continue
+        try:
+            fm = yaml.safe_load(match.group(1)) or {}
+        except yaml.YAMLError:
+            continue
+        for n in fm.get("key_companies") or []:
+            names.add(str(n).strip())
+    if not names:
+        report.warnings.append(f"{run_dir/'avenues'} yielded no key_companies either")
+    return [
+        CompanyRecord(name=n, source="industry", source_ref=str(run_dir),
+                      domain_confidence="unknown")
+        for n in sorted(names)
+    ]
+
+
+# ------------------------------------------------------------------ list / vc
+
+
+def from_name_list(path: Path, source: str, config: Config,
+                   tier: str | None = None) -> tuple[list[CompanyRecord], DiscoveryReport]:
+    """A newline-delimited file of names, or `name,domain` pairs."""
+    path = Path(path).expanduser()
+    if not path.exists():
+        raise ConfigError(f"company list not found: {path}")
+    report = DiscoveryReport(source=source, source_ref=str(path))
+    records = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, _, domain = line.partition(",")
+        records.append(CompanyRecord(
+            name=name.strip(),
+            domain=domain.strip().lower() or None,
+            domain_confidence="declared" if domain.strip() else "unknown",
+            tier=tier,
+            campaign=config.campaigns.for_tier(tier) if tier else None,
+            source=source,
+            source_ref=str(path),
+        ))
+    return records, report
+
+
+# ------------------------------------------------------------------ persist
+
+
+def _next_status(existing: str | None, excluded: bool, degraded: bool) -> str:
+    """Decide an account's status on re-import.
+
+    Exclusion is sticky. Someone already decided against this company, and a
+    later run that happens to list it should not quietly put it back in the
+    queue -- clearing an exclusion is a human's call.
+
+    Research progress is also preserved: a company that is already researched
+    must not be demoted to `new` because a second run mentioned it.
+    """
+    if excluded or existing == "excluded":
+        return "excluded"
+    if existing in ("done", "researching"):
+        return existing
+    return "degraded" if degraded else "new"
+
+
+def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
+           report: DiscoveryReport, degraded: bool = False) -> None:
+    for r in records:
+        key = normalize_company(r.name)
+        if not key:
+            continue
+        row = conn.execute(
+            "SELECT id, status, domain FROM accounts WHERE name_normalized = ?", (key,)
+        ).fetchone()
+        status = _next_status(row["status"] if row else None,
+                              bool(r.excluded_reason), degraded)
+
+        if row:
+            conn.execute(
+                "UPDATE accounts SET tier = COALESCE(?, tier), campaign = COALESCE(?, campaign),"
+                " domain = COALESCE(domain, ?),"
+                " domain_confidence = CASE WHEN domain IS NULL AND ? IS NOT NULL THEN ?"
+                "   ELSE domain_confidence END,"
+                " what = COALESCE(?, what), entry_note = COALESCE(?, entry_note),"
+                " ships = COALESCE(?, ships), subproblems = COALESCE(?, subproblems),"
+                " evidence_url = COALESCE(?, evidence_url),"
+                " excluded_reason = COALESCE(?, excluded_reason),"
+                " status = ?, updated_at = ? WHERE id = ?",
+                (r.tier, r.campaign, r.domain, r.domain, r.domain_confidence,
+                 r.what, r.entry_note,
+                 int(r.ships) if r.ships is not None else None,
+                 ",".join(r.subproblems) or None, r.evidence_url, r.excluded_reason,
+                 status, utcnow(), row["id"]),
+            )
+            if status == "excluded":
+                report.excluded += 1
+            else:
+                report.updated += 1
+        else:
+            conn.execute(
+                "INSERT INTO accounts (name, name_normalized, domain, source, source_ref,"
+                " status, excluded_reason, tier, campaign, what, entry_note, ships,"
+                " subproblems, evidence_url, domain_confidence, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (r.name, key, r.domain, r.source, r.source_ref, status, r.excluded_reason,
+                 r.tier, r.campaign, r.what, r.entry_note,
+                 int(r.ships) if r.ships is not None else None,
+                 ",".join(r.subproblems) or None, r.evidence_url, r.domain_confidence,
+                 utcnow(), utcnow()),
+            )
+            if status == "excluded":
+                report.excluded += 1
+            else:
+                report.added += 1
+
+    log_event(conn, "info", "discover.import", source=report.source,
+              ref=report.source_ref, added=report.added, updated=report.updated)
+
+
+# ------------------------------------------------------------------ cli
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Discover companies into the accounts table.")
+    ap.add_argument("--mode", choices=["list", "vc", "industry"], required=True)
+    ap.add_argument("--run", help="industry-research run directory (mode=industry)")
+    ap.add_argument("--file", help="company list file (mode=list|vc)")
+    ap.add_argument("--tier", help="tier to assign (mode=list|vc)")
+    ap.add_argument("--config")
+    ap.add_argument("--db")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+
+    tiers = {t for c in config.campaigns.campaigns.values() for t in c.tiers}
+
+    try:
+        if args.mode == "industry":
+            if not args.run:
+                print("--run is required for mode=industry", file=sys.stderr)
+                return 2
+            records, report = from_industry_run(config, Path(args.run), tiers)
+        else:
+            if not args.file:
+                print("--file is required for this mode", file=sys.stderr)
+                return 2
+            records, report = from_name_list(Path(args.file), args.mode, config, args.tier)
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+
+    conn = open_db(args.db)
+    if args.dry_run:
+        print(f"dry run -- {len(records)} record(s) parsed, nothing written")
+        for r in records[:15]:
+            print(f"  {r.tier or '-':<14} {r.domain or '(no domain)':<28} {r.name}")
+        return 0
+
+    with transaction(conn):
+        upsert(conn, records, report, degraded=bool(report.degraded_run))
+    print(report.summary())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

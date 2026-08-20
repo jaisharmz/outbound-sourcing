@@ -97,16 +97,36 @@ false signal.
 
 ### 1. Companies
 
-Three modes, all landing in the `accounts` table:
+```bash
+outbound discover --mode list     --file companies.txt --tier startup
+outbound discover --mode vc       --file portfolio.txt --tier startup
+outbound discover --mode industry --run  ./industry-research/<topic>/
+outbound accounts --needs-domain          # what is blocking people discovery
+```
 
-- `list` — a file of company names the user supplies.
-- `vc` — portfolio pages of named funds.
-- `industry` — wraps the `industry-research` skill. The adapter reads that run's
-  `run.json` plus the `key_companies` field in each `avenues/*.md` YAML header. It does
-  **not** parse prose; that frontmatter is the only contractually stable surface.
+All three land in `accounts`. The industry adapter reads `landscape.md`'s fenced YAML
+block, not the prose and not the avenue frontmatter — see `references/schema.md` for the
+shape and for the three ways it drifts.
+
+**A landscape `url` is evidence, not a homepage.** Google DeepMind's is an arXiv abstract.
+Never take a sending domain from one without checking it against the aggregator lists;
+derived domains are stored as candidates and still need resolution.
 
 An `industry-research` run costs 20–60 minutes and most of a session's search budget, so
 it is an occasional source. Companies persist in SQLite; the daily loop reads from there.
+
+### Campaigns
+
+Accounts enroll into a campaign by tier, per `config/campaigns.yaml`. Two segments that
+fail for different reasons do not share copy: a small company ignores you because nobody
+read it, a large lab ignores you because the named researcher has no mechanism to engage
+an outside group without a formal partnership process. A blended reply rate hides which
+one is working, so tier and campaign are carried to the contact record and reporting
+breaks them out separately.
+
+Campaign templates live in `templates/<campaign>/` and fall back per file to `templates/`,
+so a campaign only overrides the copy it actually changes. **A template still containing a
+bracketed placeholder blocks its campaign** — an unwritten email must not be sendable.
 
 ### 2. People — the agentic loop
 

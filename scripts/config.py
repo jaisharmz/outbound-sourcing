@@ -399,6 +399,43 @@ class Sequence(Strict):
 # ---------------------------------------------------------------- cc
 
 
+class CampaignDef(Strict):
+    """One named campaign: which accounts it targets and what copy it uses.
+
+    Two campaigns targeting different tiers fail differently and cannot share
+    copy. A startup ignores you because nobody read it; a frontier lab ignores
+    you because the named researcher has no mechanism to engage an outside group
+    without a formal partnership process. A blended reply rate hides which one
+    is working, so they stay separate all the way through reporting.
+    """
+
+    description: str = ""
+    # Which landscape tiers enroll into this campaign.
+    tiers: list[str] = Field(default_factory=list)
+    # Relative to config/. Falls back to templates/ when unset.
+    templates_dir: str | None = None
+    # Falls back to the steps in sequence.yaml when unset.
+    steps: list["Step"] | None = None
+
+
+class Campaigns(Strict):
+    campaigns: dict[str, CampaignDef] = Field(default_factory=dict)
+
+    def for_tier(self, tier: str) -> str | None:
+        for name, c in self.campaigns.items():
+            if tier in c.tiers:
+                return name
+        return None
+
+    def get(self, name: str) -> CampaignDef:
+        if name not in self.campaigns:
+            raise ConfigError(
+                f"no campaign named {name!r} in campaigns.yaml. "
+                f"Known: {sorted(self.campaigns) or '(none)'}"
+            )
+        return self.campaigns[name]
+
+
 class CCRule(Strict):
     cc: list[str] | None = None
     bcc: list[str] | None = None
@@ -503,10 +540,46 @@ class Config:
         self.mailboxes: Mailboxes = _load(Mailboxes, self.root / "mailboxes.yaml")
         self.sequence: Sequence = _load(Sequence, self.root / "sequence.yaml")
         self.cc: CCConfig = _load(CCConfig, self.root / "cc.yaml")
+        self.campaigns: Campaigns = (
+            _load(Campaigns, self.root / "campaigns.yaml")
+            if (self.root / "campaigns.yaml").exists()
+            else Campaigns()
+        )
         self.blackout: BlackoutDates = _load(BlackoutDates, self.root / "blackout_dates.yaml")
         self.dorks: list[Dork] = self._load_dorks()
         self.templates_dir = self.root / "templates"
         self._cross_check()
+
+    # ------------------------------------------------ per-campaign resolution
+
+    def steps_for(self, campaign: str | None = None) -> list[Step]:
+        """The sequence a campaign runs. Falls back to sequence.yaml."""
+        if campaign and campaign in self.campaigns.campaigns:
+            steps = self.campaigns.campaigns[campaign].steps
+            if steps:
+                return steps
+        return self.sequence.steps
+
+    def step_for(self, step_id: str, campaign: str | None = None) -> Step:
+        for s in self.steps_for(campaign):
+            if s.id == step_id:
+                return s
+        raise ConfigError(
+            f"no step {step_id!r} in campaign {campaign or '(default)'}. "
+            f"Known: {[s.id for s in self.steps_for(campaign)]}"
+        )
+
+    def templates_dir_for(self, campaign: str | None = None) -> Path:
+        if campaign and campaign in self.campaigns.campaigns:
+            sub = self.campaigns.campaigns[campaign].templates_dir
+            if sub:
+                return self.root / sub
+        return self.templates_dir
+
+    def template_path(self, step: Step, campaign: str | None = None) -> Path:
+        """Campaign-specific template if it exists, otherwise the shared one."""
+        candidate = self.templates_dir_for(campaign) / step.template
+        return candidate if candidate.exists() else self.templates_dir / step.template
 
     def _load_dorks(self) -> list[Dork]:
         path = self.root / "dorks.yaml"
@@ -531,6 +604,14 @@ class Config:
             tpl = self.templates_dir / step.template
             if not tpl.exists():
                 problems.append(f"sequence.yaml step {step.id!r} -> missing template {tpl}")
+
+        for name in self.campaigns.campaigns:
+            for step in self.steps_for(name):
+                if not self.template_path(step, name).exists():
+                    problems.append(
+                        f"campaign {name!r} step {step.id!r} -> no template at "
+                        f"{self.templates_dir_for(name) / step.template} or {self.templates_dir}"
+                    )
 
         root = Path(self.campaign.attachments_root).expanduser()
         limit = self.campaign.max_attachment_bytes
@@ -596,6 +677,19 @@ class Config:
         for label, url in self.persona.links.items():
             if PLACEHOLDER_RE.search(url):
                 blockers.append(f"persona.links[{label!r}] is still a placeholder: {url}")
+
+        # A template left as a stub blocks its campaign by the same mechanism as
+        # a placeholder address: an unwritten email must not be sendable.
+        for name in (self.campaigns.campaigns if mode == "campaign" else {}):
+            for step in self.steps_for(name):
+                path = self.template_path(step, name)
+                if not path.exists():
+                    continue
+                for hit in PLACEHOLDER_RE.findall(path.read_text()):
+                    blockers.append(
+                        f"campaign {name!r} template {step.template} is still a stub: "
+                        f"contains {hit}. Write the copy before this campaign can start."
+                    )
 
         for mb in self.mailboxes.enabled():
             if PLACEHOLDER_RE.search(mb.from_.address) or "TBD" in mb.from_.address.upper():

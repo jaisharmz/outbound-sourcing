@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "topic": "example field",
+  "slug": "example",
+  "date": "2026-08-06",
+  "avenues": ["An avenue"],
+  "degraded": {"websearch": "exhausted before this run started, 200/200 session cap."},
+  "verification": {"claims_checked": 10},
+  "corrections_applied": 2
+}

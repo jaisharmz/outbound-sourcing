@@ -62,6 +62,7 @@ class RenderedEmail:
     variant: str = "attachments"
     template_hash: str = ""
     step_id: str = ""
+    campaign: str | None = None
 
     @property
     def recipient_count(self) -> int:
@@ -121,7 +122,7 @@ def parse_template(path: Path) -> tuple[str, str]:
     return str(subject), match.group(2)
 
 
-def template_hash(config: Config) -> str:
+def template_hash(config: Config, campaign: str | None = None) -> str:
     """Fingerprint every template plus the persona that gets injected into them.
 
     The scheduler refuses to start a campaign whose hash differs from the one on
@@ -129,12 +130,15 @@ def template_hash(config: Config) -> str:
     recipient sees.
     """
     h = hashlib.sha256()
-    for step in config.sequence.steps:
-        path = config.templates_dir / step.template
+    h.update((campaign or "").encode())
+    for step in config.steps_for(campaign):
+        path = config.template_path(step, campaign)
         h.update(step.id.encode())
         h.update(path.read_bytes() if path.exists() else b"<missing>")
     for name in sorted(config.sequence.reply_templates.values()):
-        path = config.templates_dir / name
+        path = config.templates_dir_for(campaign) / name
+        if not path.exists():
+            path = config.templates_dir / name
         if path.exists():
             h.update(path.read_bytes())
     h.update((config.root / "persona.md").read_bytes())
@@ -174,6 +178,7 @@ def build_context(
     account: dict[str, Any],
     personalization: str | None,
     links: list[tuple[str, str]],
+    campaign_name: str | None = None,
 ) -> dict[str, Any]:
     return {
         "contact": contact,
@@ -192,7 +197,8 @@ def build_context(
             "footer": persona.footer,
             "unsubscribe_instructions": persona.unsubscribe_instructions,
         },
-        "campaign": {"name": campaign.name, "variant": campaign.step1_variant},
+        "campaign": {"name": campaign_name or campaign.name,
+                     "variant": campaign.step1_variant},
         "document_links": [{"name": n, "url": u} for n, u in links],
     }
 
@@ -208,13 +214,14 @@ def render(
     bcc: list[str] | None = None,
     from_header: str = "",
     reply_to: str | None = None,
+    campaign: str | None = None,
 ) -> RenderedEmail:
     """Render one email. Pure function of config + contact; no I/O beyond files."""
-    subject_tpl, body_tpl = parse_template(config.templates_dir / step.template)
+    subject_tpl, body_tpl = parse_template(config.template_path(step, campaign))
 
     # Step 1 has two variants and the A/B settles which performs better. Later
     # steps always attach, because by then the recipient has engaged.
-    is_first = step.id == config.sequence.steps[0].id
+    is_first = step.id == config.steps_for(campaign)[0].id
     variant = config.campaign.step1_variant if is_first else "attachments"
     if variant == "links" and is_first:
         attachments: list[Attachment] = []
@@ -226,6 +233,7 @@ def render(
     ctx = build_context(
         persona=config.persona,
         campaign=config.campaign,
+        campaign_name=campaign,
         contact=contact,
         account=account,
         personalization=contact.get("personalization"),
@@ -251,8 +259,9 @@ def render(
         reply_to=reply_to,
         attachments=attachments,
         variant=variant,
-        template_hash=template_hash(config),
+        template_hash=template_hash(config, campaign),
         step_id=step.id,
+        campaign=campaign,
     )
 
 

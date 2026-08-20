@@ -1,0 +1,25 @@
+# Named campaigns. A campaign is a target segment plus the copy that segment
+# needs -- not just a label on the same email.
+#
+# Two segments that fail for different reasons cannot share copy, and a blended
+# reply rate hides which one is working. Reporting breaks these out separately.
+#
+# templates_dir is relative to config/ and falls back to templates/ per file, so
+# a campaign only has to override the templates it actually changes.
+# steps falls back to sequence.yaml when omitted.
+
+campaigns:
+  startup:
+    description: >-
+      Small and mid-size companies where a named researcher or founder can
+      agree to a collaboration without a procurement process.
+    tiers: [startup]
+    templates_dir: templates/startup
+
+  frontier-lab:
+    description: >-
+      Large labs with internal research orgs. The bottleneck is not relevance,
+      it is whether the person has a mechanism to say yes to an outside group
+      without a formal partnership process.
+    tiers: [frontier-lab]
+    templates_dir: templates/frontier-lab

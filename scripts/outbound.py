@@ -17,6 +17,7 @@ from .cc import resolve as resolve_cc
 from .config import Config, load_config, wire_size
 from .db import open_db, transaction, utcnow
 from .errors import ConfigError
+from .discover_companies import main as discover_main
 from .ingest_candidates import ingest
 from .normalize import display_company, registrable_domain
 from . import providers, suppression, templates
@@ -102,6 +103,63 @@ def db_stats(db: Optional[str] = typer.Option(None, "--db")):
                   "suppression", "test_sends"):
         n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         typer.echo(f"  {table:<14} {n}")
+
+
+# ------------------------------------------------------------------ discover
+
+
+@app.command("discover")
+def discover_cmd(
+    mode: str = typer.Option(..., "--mode", help="list | vc | industry"),
+    run: Optional[str] = typer.Option(None, "--run", help="industry-research run dir"),
+    file: Optional[str] = typer.Option(None, "--file", help="company list file"),
+    tier: Optional[str] = typer.Option(None, "--tier"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """Find companies and load them into the accounts table."""
+    argv = ["--mode", mode]
+    for flag, value in (("--run", run), ("--file", file), ("--tier", tier),
+                        ("--config", config), ("--db", db)):
+        if value:
+            argv += [flag, value]
+    if dry_run:
+        argv.append("--dry-run")
+    raise typer.Exit(discover_main(argv))
+
+
+@app.command("accounts")
+def accounts_cmd(
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    status: Optional[str] = typer.Option(None, "--status"),
+    needs_domain: bool = typer.Option(False, "--needs-domain"),
+    db: Optional[str] = typer.Option(None, "--db"),
+    limit: int = typer.Option(40, "--limit"),
+):
+    """List accounts. --needs-domain shows the ones blocking people discovery."""
+    conn = open_db(db)
+    where, params = [], []
+    if campaign:
+        where.append("campaign = ?"); params.append(campaign)
+    if status:
+        where.append("status = ?"); params.append(status)
+    if needs_domain:
+        where.append("domain IS NULL AND status != 'excluded'")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = conn.execute(
+        f"SELECT name, tier, campaign, domain, domain_confidence, status FROM accounts"
+        f"{clause} ORDER BY campaign, name LIMIT ?", (*params, limit)
+    ).fetchall()
+    if not rows:
+        typer.echo("(no matching accounts)")
+        return
+    for r in rows:
+        typer.echo(f"  {str(r['campaign'] or '-'):<13} {str(r['status']):<10} "
+                   f"{str(r['domain'] or '(no domain)'):<26} "
+                   f"{str(r['domain_confidence']):<11} {r['name']}")
+    total = conn.execute(f"SELECT COUNT(*) FROM accounts{clause}", tuple(params)).fetchone()[0]
+    typer.echo(f"\n  {len(rows)} shown of {total}")
 
 
 # ------------------------------------------------------------------ ingest

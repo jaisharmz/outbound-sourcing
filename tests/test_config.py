@@ -217,3 +217,92 @@ def test_test_mode_preflight_ignores_the_campaign_attachment_gate(config_root):
 
 def test_within_limits_config_has_no_attachment_blocker(config: Config):
     assert not any("attachment" in b for b in config.preflight("campaign"))
+
+
+# ---------------------------------------------------------------- campaigns
+
+
+@pytest.fixture
+def two_campaigns(config_root):
+    (config_root / "templates" / "startup").mkdir(exist_ok=True)
+    (config_root / "templates" / "frontier-lab").mkdir(exist_ok=True)
+    src = (config_root / "templates" / "step1_initial.md").read_text()
+    (config_root / "templates" / "startup" / "step1_initial.md").write_text(src)
+    (config_root / "templates" / "frontier-lab" / "step1_initial.md").write_text(
+        "---\nsubject: \"[WRITE THIS SUBJECT]\"\n---\n[WRITE THIS COPY]\n"
+    )
+    (config_root / "campaigns.yaml").write_text(
+        "campaigns:\n"
+        "  startup:\n    tiers: [startup]\n    templates_dir: templates/startup\n"
+        "  frontier-lab:\n    tiers: [frontier-lab]\n    templates_dir: templates/frontier-lab\n"
+    )
+    return Config(config_root)
+
+
+def test_tier_maps_to_a_campaign(two_campaigns):
+    assert two_campaigns.campaigns.for_tier("startup") == "startup"
+    assert two_campaigns.campaigns.for_tier("frontier-lab") == "frontier-lab"
+    assert two_campaigns.campaigns.for_tier("academic") is None
+
+
+def test_campaign_templates_override_the_shared_one(two_campaigns):
+    step = two_campaigns.sequence.steps[0]
+    startup = two_campaigns.template_path(step, "startup")
+    frontier = two_campaigns.template_path(step, "frontier-lab")
+    assert startup.parent.name == "startup"
+    assert frontier.parent.name == "frontier-lab"
+    assert startup.read_text() != frontier.read_text()
+
+
+def test_campaign_falls_back_to_the_shared_template_per_file(two_campaigns):
+    """A campaign only overrides the templates it actually changes."""
+    step2 = two_campaigns.sequence.steps[1]
+    assert two_campaigns.template_path(step2, "startup").parent.name == "templates"
+
+
+def test_unknown_campaign_is_a_clear_error(two_campaigns):
+    with pytest.raises(ConfigError, match="no campaign named"):
+        two_campaigns.campaigns.get("nope")
+
+
+def test_template_hash_differs_per_campaign(two_campaigns):
+    from scripts.templates import template_hash
+    assert template_hash(two_campaigns, "startup") != template_hash(two_campaigns, "frontier-lab")
+
+
+def test_a_stub_template_blocks_its_campaign(two_campaigns):
+    """An unwritten email must not be sendable."""
+    blockers = two_campaigns.preflight("campaign")
+    assert any("frontier-lab" in b and "stub" in b for b in blockers)
+    assert not any("'startup'" in b and "stub" in b for b in blockers)
+
+
+def test_a_stub_does_not_block_a_test_send(two_campaigns):
+    assert not any("stub" in b for b in two_campaigns.preflight("test"))
+
+
+def test_missing_campaign_template_is_caught_at_load(config_root):
+    (config_root / "campaigns.yaml").write_text(
+        "campaigns:\n  ghost:\n    tiers: [x]\n    templates_dir: templates/ghost\n"
+    )
+    (config_root / "templates" / "step1_initial.md").unlink()
+    with pytest.raises(ConfigError, match="missing template"):
+        Config(config_root)
+
+
+def test_campaigns_yaml_is_optional(config_root):
+    (config_root / "campaigns.yaml").unlink()
+    cfg = Config(config_root)
+    assert cfg.campaigns.campaigns == {}
+    assert cfg.steps_for("anything") == cfg.sequence.steps
+
+
+def test_rendering_uses_the_campaign_template(two_campaigns):
+    from scripts.templates import render
+    contact = {"first_name": "Ada", "last_name": "L", "name": "Ada L",
+               "title": "RS", "email": "a@b.test", "personalization": None}
+    account = {"name": "Target", "domain": "b.test"}
+    email = render(two_campaigns, two_campaigns.sequence.steps[0], contact=contact,
+                   account=account, to="a@b.test", campaign="frontier-lab")
+    assert "[WRITE THIS COPY]" in email.body
+    assert email.campaign == "frontier-lab"

@@ -127,3 +127,56 @@ A message row commits as `sending` **before** the provider call and updates to `
 after. A crash between the two leaves a `sending` row, which reconciliation resolves
 against provider state. `idempotency_key` is `contact:step:template_hash`, so a retry
 after a partial failure cannot produce a second email.
+
+
+## Company discovery
+
+Three modes, one table. Nothing downstream cares which produced a row.
+
+| mode | input |
+|---|---|
+| `list` | a file of `Name` or `Name,domain` lines |
+| `vc` | the same file format, produced by researching portfolio pages agentically |
+| `industry` | an `industry-research` run directory |
+
+### The industry-research adapter
+
+Read from the run directory, in this order:
+
+1. **`landscape.md`'s fenced YAML block** — the real source. Its `orgs` list carries
+   `name`, `tier`, `url`, `what`, `subproblems`, `ships`, `entry` and `evidence` on every
+   entry, and sometimes `stage`, `raised`, `investors`, `headcount`. Its `excluded` list
+   carries companies someone already ruled out, with the reason.
+2. **`run.json`**, read leniently for `slug`, `date` and `degraded`.
+3. **Avenue frontmatter `key_companies`** only as a fallback, since it carries names and
+   no URLs.
+
+Three things the adapter exists to get right, all of them learned from real output rather
+than from the source skill's documentation:
+
+**`url` is an evidence link, not a homepage.** NVIDIA's is `nvidia.com`; Google DeepMind's
+is an arXiv abstract, Anthropic's a docs subdomain, a university group's a personal site or
+a GitHub repo. Extracting a sending domain from those produces mail to a stranger at the
+wrong company. Anything matching the aggregator lists yields no domain at all, and a domain
+that is derived is stored as a `candidate` — never as a fact. `outbound accounts
+--needs-domain` lists the ones still blocking people discovery.
+
+**The schema drifts.** `run.json` has gained `degraded`, `verification`,
+`corrections_applied`, `integrity_warning` and `known_gaps`, and lost the documented
+`profile_hash`. `tier` has an open vocabulary — `nonprofit` and `government` appear in some
+runs and not others. `stage`/`raised`/`investors`/`headcount` appear in one run of three.
+Depend only on what has held: `name`, `tier`, `url`, and the avenue frontmatter's ten keys,
+which have been stable.
+
+**Runs can be incomplete or degraded.** One run on disk has an empty `avenues/` directory.
+Two of three sampled runs exhausted the WebSearch cap before starting, which `run.json`
+records under `degraded`. Their rosters are floors, not censuses, so their accounts are
+imported as `degraded` and re-queue rather than reading as finished.
+
+### Status transitions on re-import
+
+| existing | result |
+|---|---|
+| `excluded` | stays `excluded` — clearing an exclusion is a human's call |
+| `done`, `researching` | preserved, never demoted by a second run mentioning the company |
+| anything else | `degraded` if the source run was degraded, else `new` |
