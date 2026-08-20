@@ -89,6 +89,36 @@ warning screen, which the account owner can click through.
 If an institutional account is blocked, it still works as `Reply-To`. It just cannot be a
 sender, which is the arrangement you want anyway.
 
+### 4b. Publishing status — this bites an unattended daemon
+
+While the OAuth consent screen is in **Testing**, Google treats the app as unverified and
+**every refresh token it issues expires after 7 days**. A daemon that is supposed to
+survive you not looking at it for three days will instead stop every week and need a
+human at a browser. Two ways out, and they suit different stages:
+
+**Now, for the test harness on a consumer Gmail account:** add the account under
+Google Auth Platform → Audience → Test users. Authorization then works, with the 7-day
+expiry. That is fine for a rendering harness you re-auth by hand.
+
+**Before real sending, for the mailbox pool:** don't use installed-app OAuth at all. The
+sending domains are Workspace tenants you will be super admin of, which makes a **service
+account with domain-wide delegation** the right mechanism:
+
+- no consent screen, so no verification and no unverified-app warning
+- no refresh tokens, so nothing expires on a 7-day clock
+- **one credential impersonates every mailbox in the domain**, so a 3-mailbox pool and a
+  15-mailbox pool cost the same to authorize
+
+Set it up in Admin Console → Security → API Controls → Domain-wide delegation, granting
+the service account's client ID the same three Gmail scopes. This does not work for
+consumer `@gmail.com` accounts, which is exactly why the interim harness uses OAuth and
+the production pool should not.
+
+The alternative — publishing the app to **In production** — also removes the 7-day expiry,
+but the Gmail scopes here are sensitive/restricted, so production status invites Google's
+verification process. Domain-wide delegation sidesteps that question entirely for domains
+you own.
+
 ### 5. Landing page (before the links A/B)
 
 Host the first-touch documents on the sending domain, so the link domain aligns with the
