@@ -198,6 +198,10 @@ class Discovery(Strict):
 class Campaign(Strict):
     name: str
     test_recipient: str
+    # --to is the only path in the system that reaches an arbitrary address
+    # without passing the review gate. Entries are exact addresses or *@domain.
+    # test_recipient is always allowed implicitly.
+    test_send_allowlist: list[str] = Field(default_factory=list)
     timezone: str = "America/Los_Angeles"
     daily_global_cap: int = 500
     sending_window: SendingWindow = Field(default_factory=SendingWindow)
@@ -232,6 +236,40 @@ class Campaign(Strict):
     @classmethod
     def _email(cls, v: str) -> str:
         return valid_email(v)
+
+    @field_validator("test_send_allowlist")
+    @classmethod
+    def _allowlist_entries(cls, v: list[str]) -> list[str]:
+        out = []
+        for entry in v:
+            e = entry.strip().lower()
+            if e.startswith("*@"):
+                if "." not in e[2:]:
+                    raise ValueError(f"wildcard entry {entry!r} needs a real domain after *@")
+                out.append(e)
+            elif EMAIL_RE.match(e):
+                out.append(e)
+            else:
+                raise ValueError(
+                    f"test_send_allowlist entry {entry!r} is neither an email address nor "
+                    f"a *@domain wildcard"
+                )
+        return out
+
+    def allows_test_recipient(self, address: str) -> bool:
+        addr = address.strip().lower()
+        if addr == self.test_recipient:
+            return True
+        domain = addr.partition("@")[2]
+        for entry in self.test_send_allowlist:
+            if entry.startswith("*@"):
+                # Subdomains count: mail-tester hands out @srv1.mail-tester.com.
+                suffix = entry[2:]
+                if domain == suffix or domain.endswith("." + suffix):
+                    return True
+            elif entry == addr:
+                return True
+        return False
 
     @model_validator(mode="after")
     def _links_need_a_home(self) -> "Campaign":

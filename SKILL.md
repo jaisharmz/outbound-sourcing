@@ -71,7 +71,15 @@ reimplements. Run them from the skill directory with the venv active.
 | `outbound suppress add <value> --kind email\|domain\|company` | Permanent, global. |
 | `outbound demo` | End-to-end on fixtures through the console mailbox. No network. |
 | `outbound auth --mailbox <id>` | OAuth for one mailbox. Names the exact failure mode. |
-| `outbound test-email --mailbox <id> --step <id>` \| `--all-mailboxes` | Real email to `test_recipient`, then prints outgoing **and delivered** headers with SPF/DKIM/DMARC verdicts. |
+| `outbound test-email --mailbox <id> --step <id>` \| `--all-mailboxes` \| `--to <addr>` | Real email to `test_recipient`, then prints outgoing **and delivered** headers with SPF/DKIM/DMARC verdicts. |
+
+`--to` is the only path in the system that reaches an address which never passed the
+review gate, so it is gated: the address must be `test_recipient` or match
+`campaign.yaml: test_send_allowlist` (exact addresses or `*@domain`, subdomains included),
+otherwise `--force` is required and prints a loud warning. **Suppression is checked
+regardless and `--force` does not override it** — an opt-out is permanent and global, and
+"it was only a test" is not an exception the recipient agreed to. Every outcome, including
+every refusal, is recorded in `test_sends` with `allowlisted` and `forced` flags.
 
 Milestones 4 onward add: `discover`, `verify`, `review`, `send_queue`, `watch_replies`,
 `report`. This table grows with them.

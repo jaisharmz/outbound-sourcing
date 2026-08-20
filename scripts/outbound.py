@@ -325,6 +325,8 @@ def test_email(
     campaign: Optional[str] = typer.Option(None, "--campaign"),
     all_mailboxes: bool = typer.Option(False, "--all-mailboxes"),
     to: Optional[str] = typer.Option(None, "--to", help="override test_recipient"),
+    force: bool = typer.Option(False, "--force",
+                               help="send to an address outside test_send_allowlist"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
     wait: int = typer.Option(30, "--wait", help="seconds to wait for the delivered copy"),
@@ -358,14 +360,15 @@ def test_email(
 
     failures = 0
     for mailbox_id in targets:
-        if not _one_test_send(cfg, conn, mailbox_id, step, campaign, wait, to):
+        if not _one_test_send(cfg, conn, mailbox_id, step, campaign, wait, to, force):
             failures += 1
     if failures:
         raise typer.Exit(1)
 
 
 def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
-                   campaign: Optional[str], wait: int, to_override: str | None = None) -> bool:
+                   campaign: Optional[str], wait: int, to_override: str | None = None,
+                   force: bool = False) -> bool:
     mb = cfg.mailboxes.get(mailbox_id)
 
     # Check credentials before rendering. With --all-mailboxes an unauthorized
@@ -384,8 +387,12 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
         return False
 
     contact, account = _fixture_contact()
-    to = to_override or cfg.campaign.test_recipient
+    to = (to_override or cfg.campaign.test_recipient).strip().lower()
     contact["email"] = to
+
+    allowed, forced = _authorize_test_recipient(cfg, conn, mailbox_id, step_id, campaign, to, force)
+    if not allowed:
+        return False
 
     rendered = _render_for(cfg, conn, step_id, contact, account, campaign,
                            mailbox_id=mailbox_id)
@@ -414,9 +421,9 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
 
     conn.execute(
         "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash, to_addr,"
-        " ok, headers, error, sent_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        " ok, headers, error, sent_at, allowlisted, forced) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (mailbox_id, step_id, campaign or cfg.campaign.name, rendered.template_hash, to,
-         int(result.ok), result.headers, result.error, utcnow()),
+         int(result.ok), result.headers, result.error, utcnow(), int(not forced), int(forced)),
     )
 
     if not result.ok:
@@ -472,6 +479,52 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
             fg=typer.colors.YELLOW,
         )
     return True
+
+
+def _authorize_test_recipient(cfg: Config, conn, mailbox_id: str, step_id: str,
+                              campaign: Optional[str], to: str,
+                              force: bool) -> tuple[bool, bool]:
+    """Gate the one path that can reach an address the review gate never saw.
+
+    Returns (allowed, forced). Suppression is checked regardless of --force and
+    is never overridable: an opt-out is permanent and global, and "it was only a
+    test" is not an exception a recipient agreed to.
+    """
+    def refuse(reason: str) -> tuple[bool, bool]:
+        typer.secho(f"\n=== test send: mailbox {mailbox_id} ===", fg=typer.colors.CYAN)
+        typer.secho(f"  REFUSED: {reason}", fg=typer.colors.RED)
+        conn.execute(
+            "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash, to_addr,"
+            " ok, error, sent_at, allowlisted, forced) VALUES (?,?,?,?,?,0,?,?,0,?)",
+            (mailbox_id, step_id, campaign or cfg.campaign.name,
+             templates.template_hash(cfg), to, reason, utcnow(), int(force)),
+        )
+        return False, False
+
+    if reason := suppression.is_suppressed(conn, to):
+        return refuse(
+            f"{to} is on the suppression list ({reason}). Suppression is permanent and "
+            f"global, and --force does not override it."
+        )
+
+    if cfg.campaign.allows_test_recipient(to):
+        return True, False
+
+    if not force:
+        return refuse(
+            f"{to} is not in campaign.yaml test_send_allowlist and is not test_recipient.\n"
+            f"          Allowed: {', '.join(dict.fromkeys([cfg.campaign.test_recipient] + cfg.campaign.test_send_allowlist))}\n"
+            f"          Add it there, or pass --force to send to it once."
+        )
+
+    typer.secho(
+        f"\n  !! FORCED TEST SEND TO AN UNLISTED ADDRESS !!\n"
+        f"  {to} is not in test_send_allowlist. This address has not been through the\n"
+        f"  review gate and is not a contact in the database. Sending anyway because\n"
+        f"  --force was passed. Recorded in test_sends as forced.",
+        fg=typer.colors.RED,
+    )
+    return True, True
 
 
 def _summarize_auth(headers: str) -> None:

@@ -4,6 +4,13 @@ name: default
 # stranger -- the scheduler refuses to send from a mailbox that has not passed.
 test_recipient: you@example.com
 
+# --to is the only path that reaches an address the review gate never saw.
+# Anything not listed here (or test_recipient) needs --force. Suppression is
+# checked regardless and --force does not override it.
+test_send_allowlist:
+  - you@example.com
+  - "*@mail-tester.com"
+
 timezone: America/Los_Angeles
 daily_global_cap: 500
 
