@@ -1,0 +1,13 @@
+config/
+state/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+secrets.env
+token_*.json
+credentials.json

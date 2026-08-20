@@ -1,0 +1,11 @@
+# Never send on these days, on top of the weekend rule.
+dates:
+  - 2026-01-01
+  - 2026-07-04
+  - 2026-11-26
+  - 2026-11-27
+  - 2026-12-25
+
+ranges:
+  - start: 2026-12-22
+    end: 2027-01-02

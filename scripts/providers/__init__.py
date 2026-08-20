@@ -1,0 +1,93 @@
+"""Mailbox providers.
+
+The send path contains zero model calls. Nothing in this package, or anything it
+imports, may reach a model -- that is verifiable by reading the import graph
+rather than by trusting a comment.
+
+Gmail API first (thread IDs make reply detection far more reliable than IMAP
+heuristics), generic SMTP+IMAP second, and `console` for testing.
+"""
+
+from __future__ import annotations
+
+import abc
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any
+
+from ..config import Mailbox
+from ..templates import RenderedEmail
+
+
+@dataclass
+class SendResult:
+    ok: bool
+    message_id: str | None = None
+    thread_id: str | None = None
+    headers: str = ""
+    error: str | None = None
+    # Distinguishes "the provider said no, permanently" from "try again later".
+    # An ambiguous failure is never silently retried.
+    retryable: bool = False
+
+
+@dataclass
+class IncomingReply:
+    provider_id: str
+    thread_id: str
+    from_addr: str
+    subject: str
+    body: str
+    received_at: datetime
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+class MailboxProvider(abc.ABC):
+    """One configured sending identity."""
+
+    def __init__(self, mailbox: Mailbox, secrets: dict[str, str] | None = None):
+        self.mailbox = mailbox
+        self.secrets = secrets or {}
+
+    @property
+    def id(self) -> str:
+        return self.mailbox.id
+
+    @abc.abstractmethod
+    def send(self, email: RenderedEmail) -> SendResult: ...
+
+    @abc.abstractmethod
+    def list_replies(self, thread_ids: list[str], since: datetime | None = None) -> list[IncomingReply]: ...
+
+    @abc.abstractmethod
+    def create_draft(self, email: RenderedEmail, thread_id: str | None = None) -> SendResult: ...
+
+    def verify_auth(self) -> tuple[bool, str]:
+        """Cheap credential check so a daemon fails at startup, not at 2am."""
+        return True, "no auth required"
+
+
+_REGISTRY: dict[str, type[MailboxProvider]] = {}
+
+
+def register(name: str, cls: type[MailboxProvider]) -> None:
+    _REGISTRY[name] = cls
+
+
+def build(mailbox: Mailbox, secrets: dict[str, str] | None = None) -> MailboxProvider:
+    if mailbox.provider not in _REGISTRY:
+        raise KeyError(
+            f"mailbox {mailbox.id!r} uses provider {mailbox.provider!r}, which is not "
+            f"registered. Available: {sorted(_REGISTRY)}"
+        )
+    return _REGISTRY[mailbox.provider](mailbox, secrets)
+
+
+from .console import ConsoleMailbox  # noqa: E402  (registers itself)
+
+register("console", ConsoleMailbox)
+
+__all__ = [
+    "MailboxProvider", "SendResult", "IncomingReply", "ConsoleMailbox",
+    "build", "register",
+]

@@ -1,0 +1,191 @@
+---
+name: outbound-sourcing
+description: Source prospective clients and run cold outbound end to end — find companies, research named people and ground their emails in evidence, verify addresses, review before anything sends, then send on a schedule from a warmed mailbox pool and triage the replies. Use when the user says "find me clients", "run outbound", "source companies", "who should I email at X", "check replies", "how did the campaign do", or asks to add someone to the suppression list. Discovery is agentic and uses WebSearch/WebFetch/subagents; everything from ingestion onward is scripts with no model in the loop.
+argument-hint: <discover|research|verify|review|send|replies|report> [--campaign <name>] [--dry-run]
+user-invocable: true
+---
+
+# Outbound sourcing
+
+Two layers, and the boundary between them is the whole design.
+
+**Agentic — you, at runtime.** Reading a lab's site and noticing that "Members of
+Technical Staff" lives at a different URL than "Team". Following a personal page to a CV
+PDF. Inferring that a company uses `first@` from one arXiv footnote. Deciding who at a
+company is worth contacting. Writing the personalization line. This is research, and it
+is your job, not a scraper's.
+
+**Deterministic — scripts, no model.** Domain resolution, dedupe, ICP filtering, MX/SMTP
+verification, template rendering, CC resolution, scheduling, jitter, caps, warmup,
+blackouts, the send itself, retries, state transitions, suppression, bounce tracking,
+the circuit breaker.
+
+The send path contains zero model calls. `tests/test_send_path_purity.py` enforces that
+by walking the import graph — it is checked, not promised.
+
+## The contract
+
+Agentic discovery writes **only** to `state/candidates/<company>.json`.
+`scripts/ingest_candidates.py` validates and loads it. Everything downstream reads
+SQLite and never reads you.
+
+Every record carries evidence with URLs. The validator rejects any record where the
+name/title/company binding or the email lacks a URL, and any record whose
+`personalization` has no `personalization_source_url`. At 500 sends/day a hallucinated
+contact is not a bug anyone notices in time — it is a bounce, and enough of them cost
+the sending domain permanently.
+
+**If you cannot find grounding, emit `personalization: null` and let the template fall
+back.** That is always the correct move over inventing a detail about someone's work.
+
+See `references/schema.md` for the full schema and `references/discovery.md` for the
+research brief and the evidence standard.
+
+## Setup
+
+First run, or a new machine: read `GETTING-STARTED.md`. Short version:
+
+```bash
+cd ~/.claude/skills/outbound-sourcing
+uv venv --python 3.13 && uv pip install -e ".[dev]"
+cp -r config.example config          # then edit config/
+python -m scripts.outbound validate-config
+python -m scripts.outbound db migrate
+```
+
+`config/` is gitignored and holds everything user-specific. Nothing about a particular
+user belongs in `SKILL.md`, `scripts/`, or `references/`.
+
+## Commands
+
+Every script runs as `python -m scripts.<name>`; this file orchestrates rather than
+reimplements. Run them from the skill directory with the venv active.
+
+| Command | What it does |
+|---|---|
+| `outbound validate-config` | Load and cross-check every config file. Run after any edit. |
+| `outbound db migrate` \| `db stats` | Schema, row counts. |
+| `outbound ingest [--dry-run]` | Validate candidate JSON into SQLite. |
+| `outbound render --step <id> [--email <addr>]` | Render one email exactly as it would send. |
+| `outbound cc-resolve --domain --campaign --step` | Show which CC rule wins and why. |
+| `outbound suppress add <value> --kind email\|domain\|company` | Permanent, global. |
+| `outbound demo` | End-to-end on fixtures through the console mailbox. No network. |
+
+Milestones 3 onward add: `test-email`, `discover`, `verify`, `review`, `send_queue`,
+`watch_replies`, `report`. This table grows with them.
+
+## Running discovery
+
+### 1. Companies
+
+Three modes, all landing in the `accounts` table:
+
+- `list` — a file of company names the user supplies.
+- `vc` — portfolio pages of named funds.
+- `industry` — wraps the `industry-research` skill. The adapter reads that run's
+  `run.json` plus the `key_companies` field in each `avenues/*.md` YAML header. It does
+  **not** parse prose; that frontmatter is the only contractually stable surface.
+
+An `industry-research` run costs 20–60 minutes and most of a session's search budget, so
+it is an occasional source. Companies persist in SQLite; the daily loop reads from there.
+
+### 2. People — the agentic loop
+
+For each company, spawn a subagent with a research brief and a tool budget (default 15,
+from `campaign.yaml`). Run companies in parallel batches. **The brief is generated from
+`config/icp.yaml` + `config/dorks.yaml` + the company record — never hardcoded.** Build
+it per `references/discovery.md`.
+
+The subagent's job: find people matching the ICP, find or infer their emails, ground
+every claim, write the JSON, stop. Tell it the ICP, the evidence requirements, the
+budget, and what to do when it finds nothing — emit an empty file with a `reason`, never
+pad.
+
+Sources that give you a name and a real email **in the same document**, which is what
+makes pattern inference work: arXiv PDFs (emails in the header), Semantic Scholar /
+OpenAlex, GitHub public commit emails, personal academic sites, and company `/team`,
+`/research`, `/about` pages.
+
+`config/dorks.yaml` holds search *seeds*, not a script. Improvise beyond them.
+
+**LinkedIn: SERP snippets only.** Read names and titles off search results. Never fetch,
+crawl, or automate anything on linkedin.com — it breaks their ToS and gets the user's IP
+blocked. Names found there get resolved to emails through the other channels.
+
+Cache every fetch to `state/cache/` keyed by URL hash, so re-runs are free and the user
+can see what a subagent actually read.
+
+**Report your search budget honestly.** Set `searches_used` and `budget_exhausted` in
+every candidate file. A run that exhausts WebSearch keeps fetching pages it already has
+addresses for, so verification still works and the output still looks complete while
+discovery has silently stopped. A company marked `budget_exhausted` is stored as
+`degraded`, not `done`, and re-queues. Never let a thin run read as a finished one.
+
+### 3. Ingest
+
+```bash
+python -m scripts.outbound ingest --dry-run   # validate first
+python -m scripts.outbound ingest
+```
+
+A file that fails validation is rejected whole. Read the error, fix the research, re-emit
+the file. Do not edit the JSON to make the validator pass — the validator is the point.
+
+## The human review gate
+
+Hard stop between enrichment and queueing. Nothing queues without an approved row.
+Export CSV plus a readable markdown table with name, title, company, email, verification
+status, confidence, evidence URLs, personalization and its source URL — and **five fully
+rendered emails, CC line included**. The user edits the `approved` column and re-imports.
+
+## Sending
+
+Nothing about sending involves you. The scheduler:
+
+- round-robins across enabled mailboxes, respecting per-mailbox and global caps,
+  counting **recipients including CC**, not messages
+- applies the warmup ramp from each mailbox's `warmup_start_date`
+- sends only inside the configured window, recipient-local where a timezone is known
+- never on weekends, never on a date in `blackout_dates.yaml`
+- randomizes inter-send delay and shuffles queue order
+- refuses to send from a mailbox that has never passed a test send, and refuses to start
+  a campaign whose template hash differs from the one on that test send
+- commits `sending` **before** the API call and `sent` after, so a crash never
+  double-sends; on restart it reconciles against provider state rather than retrying
+
+**The circuit breaker halts everything** if the trailing-200-send bounce rate exceeds the
+configured threshold, and requires a manual `--resume`. Do not work around it. A runaway
+bad-address campaign burns a sending domain permanently and that is not recoverable.
+
+## Replies
+
+Any reply immediately stops the sequence for that contact **and every other contact at
+the same company**. A rules pass handles bounce headers, OOO patterns, and unsubscribe
+keywords. Genuinely ambiguous replies come to you to classify into `interested` /
+`not_interested` / `referral` / `ooo` / `unsubscribe` / `bounce`.
+
+For `interested`, render the follow-up with the second-stage attachments and **create a
+draft**. Never auto-send to a human who replied.
+
+`unsubscribe` and `not_interested` write to the permanent global suppression list.
+
+## Never
+
+- Build a crawler, headless browser, or SERP scraper — WebSearch, WebFetch and subagents
+  are the crawler.
+- Fetch or automate linkedin.com.
+- Put persona strings in `scripts/` or `references/`.
+- Call a model anywhere in the sending path.
+- Auto-send a reply to a human.
+- Send to an unverified address, or one whose evidence chain is incomplete.
+- Emit a candidate record with an ungrounded claim.
+- Silently retry an ambiguous send failure.
+- Pad a thin company with guesses to make a run look productive.
+
+## References
+
+- `GETTING-STARTED.md` — install, configure, and the daily/weekly loop.
+- `references/discovery.md` — the research brief and the evidence standard.
+- `references/schema.md` — candidate schema, DB schema, the two-layer contract.
+- `references/deliverability.md` — volume ceilings, CC accounting, warmup, the A/B.
+- `references/setup.md` — OAuth, sending domains, SPF/DKIM/DMARC, warmup calendar.

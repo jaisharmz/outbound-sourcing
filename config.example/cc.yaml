@@ -1,0 +1,21 @@
+# One file controls who is copied on every email.
+# Resolution is most-specific first: domain -> campaign -> step -> default.
+#
+# An empty list is a decision, not an absence: `cc: []` drops the CC at that
+# level rather than falling through to the default.
+
+default:
+  cc: [group-inbox@example.com]
+  bcc: []
+
+by_step:
+  step3_breakup:
+    cc: []            # drop the CC on the breakup email
+
+by_campaign:
+  frontier-labs:
+    cc: [group-inbox@example.com, colleague@example.com]
+
+by_domain: {}         # per-target-company overrides
+
+merge: false          # true = union with default, false = most specific wins

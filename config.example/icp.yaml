@@ -1,0 +1,34 @@
+# Who counts as a target. Applied deterministically at ingest -- no judgment,
+# no model. A candidate that fails any rule here never reaches the queue.
+
+titles:
+  - research scientist
+  - research engineer
+  - machine learning engineer
+  - head of ai
+  - founder
+  - cto
+title_excludes:
+  - recruiter
+  - talent
+  - sales
+  - account executive
+  - intern
+seniority: [senior, staff, principal, lead, head, director, founder]
+
+company_size:
+  min: 2
+  max: 5000
+
+include_regions: [US, CA]
+# GDPR legitimate-interest for cold B2B is a call to make deliberately.
+# Remove entries here only when you have decided to make it.
+exclude_regions: [EU, UK, EEA, CH]
+
+exclude_domains:
+  - example.com
+exclude_companies:
+  - Example Excluded Co
+
+max_contacts_per_company: 3
+min_confidence: 0.5

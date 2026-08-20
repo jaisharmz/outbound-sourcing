@@ -1,0 +1,22 @@
+# Search *seeds*, not an exhaustive script. These are starting points the
+# research subagent is expected to improvise beyond.
+
+- id: gh_pages_phd
+  query: 'site:github.io "{company}" "phd"'
+  signal: technical_researcher
+
+- id: gh_pages_founder_phd
+  query: 'site:github.io "founder" "phd" "{company}"'
+  signal: founder
+
+- id: linkedin_titles
+  query: 'site:linkedin.com/in "{company}" ("research scientist" OR "head of AI" OR "ML engineer")'
+  signal: applied_ml
+
+- id: team_page
+  query: '{company} (research team OR members of technical staff OR our people)'
+  signal: team_page
+
+- id: arxiv_affiliation
+  query: 'arxiv "{company}" affiliation'
+  signal: publishing_researcher

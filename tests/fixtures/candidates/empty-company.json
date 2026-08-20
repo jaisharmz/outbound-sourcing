@@ -1,0 +1,9 @@
+{
+  "company": "Silent Corp",
+  "domain": "silentcorp.test",
+  "generated_at": "2026-08-20T17:10:00Z",
+  "searches_used": 11,
+  "budget_exhausted": false,
+  "candidates": [],
+  "reason": "No team page, no arXiv affiliations, no public commit emails. Two named people found on LinkedIn SERP snippets but no email could be grounded through any other channel, so nothing was emitted."
+}

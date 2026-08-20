@@ -1,0 +1,280 @@
+"""Load validated candidate files into SQLite.
+
+This is the only door between the agentic layer and the deterministic one.
+A file that fails validation is not partially ingested -- the whole company is
+rejected and reported, because a record that got halfway in is worse than one
+that never arrived.
+
+    python -m scripts.ingest_candidates [--dir state/candidates] [--dry-run]
+"""
+
+from __future__ import annotations
+
+import argparse
+import sqlite3
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .candidates import Candidate, CandidateError, CandidateFile, filter_suppressed, validate_file
+from .config import Config, load_config
+from .db import log_event, open_db, transaction, utcnow
+from .errors import ConfigError
+from .normalize import (
+    domain_of,
+    is_free_mail,
+    normalize_company,
+    normalize_email,
+    normalize_person,
+    registrable_domain,
+)
+from .suppression import is_suppressed, load_set
+
+
+@dataclass
+class IngestReport:
+    files_seen: int = 0
+    files_ok: int = 0
+    files_rejected: int = 0
+    contacts_added: int = 0
+    contacts_updated: int = 0
+    dropped_suppressed: list[str] = field(default_factory=list)
+    dropped_duplicate: list[str] = field(default_factory=list)
+    dropped_icp: list[str] = field(default_factory=list)
+    dropped_free_mail: list[str] = field(default_factory=list)
+    degraded_companies: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        lines = [
+            f"files:     {self.files_ok} ok, {self.files_rejected} rejected "
+            f"(of {self.files_seen})",
+            f"contacts:  {self.contacts_added} added, {self.contacts_updated} updated",
+        ]
+        for label, items in (
+            ("suppressed", self.dropped_suppressed),
+            ("duplicate", self.dropped_duplicate),
+            ("off-ICP", self.dropped_icp),
+            ("free-mail", self.dropped_free_mail),
+        ):
+            if items:
+                lines.append(f"dropped {label}: {len(items)} -- {', '.join(items[:5])}"
+                             + (" ..." if len(items) > 5 else ""))
+        if self.degraded_companies:
+            lines.append(
+                f"DEGRADED: {len(self.degraded_companies)} company/companies hit the search "
+                f"budget and will be re-queued: {', '.join(self.degraded_companies)}"
+            )
+        for err in self.errors:
+            lines.append(f"REJECTED: {err}")
+        return "\n".join(lines)
+
+
+def passes_icp(candidate: Candidate, config: Config) -> str | None:
+    """Deterministic ICP filtering against declared rules. Returns a reason to drop."""
+    icp = config.icp
+    title = candidate.title.lower()
+
+    if icp.titles and not any(t.lower() in title for t in icp.titles):
+        return f"title {candidate.title!r} matches no icp.titles entry"
+    if any(x.lower() in title for x in icp.title_excludes):
+        return f"title {candidate.title!r} matches an icp.title_excludes entry"
+    if candidate.confidence < icp.min_confidence:
+        return f"confidence {candidate.confidence} below icp.min_confidence {icp.min_confidence}"
+
+    domain = registrable_domain(candidate.domain)
+    if domain in {d.lower() for d in icp.exclude_domains}:
+        return f"domain {domain} is in icp.exclude_domains"
+    if normalize_company(candidate.company) in {normalize_company(c) for c in icp.exclude_companies}:
+        return f"company {candidate.company!r} is in icp.exclude_companies"
+
+    # GDPR: cold B2B into the EU/UK is a call the operator makes deliberately.
+    country = (candidate.country or "").upper()
+    if country and country in {r.upper() for r in icp.exclude_regions}:
+        return f"country {country} is in icp.exclude_regions"
+    tld = domain.rsplit(".", 1)[-1].upper()
+    eu_tlds = {"EU", "UK", "DE", "FR", "IE", "NL", "ES", "IT", "SE", "DK", "FI", "BE", "AT", "PL", "PT"}
+    if "EU" in {r.upper() for r in icp.exclude_regions} and tld in eu_tlds:
+        return f"domain TLD .{tld.lower()} falls under icp.exclude_regions"
+
+    return None
+
+
+def upsert_account(conn: sqlite3.Connection, cf: CandidateFile, source: str, source_ref: str) -> int:
+    key = normalize_company(cf.company)
+    row = conn.execute("SELECT id FROM accounts WHERE name_normalized = ?", (key,)).fetchone()
+    status = cf.status
+    if row:
+        conn.execute(
+            "UPDATE accounts SET status = ?, searches_used = ?, budget_exhausted = ?,"
+            " domain = COALESCE(?, domain), updated_at = ? WHERE id = ?",
+            (status, cf.searches_used, int(cf.budget_exhausted), cf.domain, utcnow(), row["id"]),
+        )
+        return int(row["id"])
+    cur = conn.execute(
+        "INSERT INTO accounts (name, name_normalized, domain, source, source_ref, status,"
+        " searches_used, budget_exhausted, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (cf.company, key, cf.domain, source, source_ref, status,
+         cf.searches_used, int(cf.budget_exhausted), utcnow(), utcnow()),
+    )
+    return int(cur.lastrowid)
+
+
+def upsert_contact(
+    conn: sqlite3.Connection, account_id: int, c: Candidate, source_file: str
+) -> tuple[int, bool]:
+    email = normalize_email(c.email)
+    row = conn.execute("SELECT id FROM contacts WHERE email = ?", (email,)).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE contacts SET title = ?, confidence = ?, personalization = ?,"
+            " personalization_source_url = ?, candidate_file = ?, updated_at = ? WHERE id = ?",
+            (c.title, c.confidence, c.personalization, c.personalization_source_url,
+             source_file, utcnow(), row["id"]),
+        )
+        cid = int(row["id"])
+        conn.execute("DELETE FROM evidence WHERE contact_id = ?", (cid,))
+        _insert_evidence(conn, cid, c)
+        return cid, False
+
+    cur = conn.execute(
+        "INSERT INTO contacts (account_id, name, first_name, last_name, title, email,"
+        " email_domain, email_basis, confidence, personalization, personalization_source_url,"
+        " timezone, country, linkedin_url, candidate_file, created_at, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (account_id, c.name, c.first_name, c.last_name, c.title, email, domain_of(email),
+         c.email_basis, c.confidence, c.personalization, c.personalization_source_url,
+         c.timezone, c.country, c.linkedin_url, source_file, utcnow(), utcnow()),
+    )
+    cid = int(cur.lastrowid)
+    _insert_evidence(conn, cid, c)
+    return cid, True
+
+
+def _insert_evidence(conn: sqlite3.Connection, contact_id: int, c: Candidate) -> None:
+    conn.executemany(
+        "INSERT INTO evidence (contact_id, claim, url, quote, retrieved_at) VALUES (?,?,?,?,?)",
+        [(contact_id, e.claim, e.url, e.quote, e.retrieved_at.isoformat()) for e in c.evidence],
+    )
+
+
+def ingest(
+    conn: sqlite3.Connection,
+    config: Config,
+    directory: Path,
+    *,
+    source: str = "discovery",
+    dry_run: bool = False,
+) -> IngestReport:
+    report = IngestReport()
+    suppressed = load_set(conn)
+    seen_people: dict[str, str] = {}   # normalized person@domain -> email already taken
+
+    for path in sorted(Path(directory).glob("*.json")):
+        report.files_seen += 1
+        try:
+            cf = validate_file(path)
+        except CandidateError as exc:
+            report.files_rejected += 1
+            report.errors.append(str(exc))
+            continue
+
+        cf, dropped = filter_suppressed(cf, suppressed)
+        report.dropped_suppressed.extend(dropped)
+        report.files_ok += 1
+        if cf.budget_exhausted:
+            report.degraded_companies.append(cf.company)
+
+        try:
+            with transaction(conn):
+                _ingest_company(conn, config, cf, path, source, seen_people, report)
+                if dry_run:
+                    # Roll this company back but keep validating the rest, so a
+                    # dry run reports on the whole directory, not the first file.
+                    raise _Rollback()
+        except _Rollback:
+            continue
+
+    return report
+
+
+def _ingest_company(
+    conn: sqlite3.Connection,
+    config: Config,
+    cf: CandidateFile,
+    path: Path,
+    source: str,
+    seen_people: dict[str, str],
+    report: IngestReport,
+) -> None:
+    account_id = upsert_account(conn, cf, source, str(path))
+    per_company = 0
+
+    for c in cf.candidates:
+        email = normalize_email(c.email)
+
+        if reason := is_suppressed(conn, email, c.company):
+            report.dropped_suppressed.append(f"{email} ({reason})")
+            continue
+        if is_free_mail(domain_of(email)):
+            report.dropped_free_mail.append(email)
+            continue
+
+        person_key = f"{normalize_person(c.name)}@{registrable_domain(domain_of(email))}"
+        if person_key in seen_people and seen_people[person_key] != email:
+            report.dropped_duplicate.append(
+                f"{email} (same person as {seen_people[person_key]})"
+            )
+            continue
+        if reason := passes_icp(c, config):
+            report.dropped_icp.append(f"{email} ({reason})")
+            continue
+        if per_company >= config.icp.max_contacts_per_company:
+            report.dropped_icp.append(f"{email} (over max_contacts_per_company)")
+            continue
+
+        seen_people[person_key] = email
+        _, added = upsert_contact(conn, account_id, c, str(path))
+        per_company += 1
+        if added:
+            report.contacts_added += 1
+        else:
+            report.contacts_updated += 1
+
+    log_event(conn, "info", "ingest.company", company=cf.company,
+              candidates=len(cf.candidates), degraded=cf.budget_exhausted)
+
+
+class _Rollback(Exception):
+    pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="Validate and load candidate files into SQLite.")
+    ap.add_argument("--dir", default=None, help="candidates directory (default: from campaign.yaml)")
+    ap.add_argument("--config", default=None)
+    ap.add_argument("--db", default=None)
+    ap.add_argument("--source", default="discovery")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+
+    root = Path(__file__).resolve().parent.parent
+    directory = Path(args.dir) if args.dir else root / config.campaign.discovery.candidates_dir
+    conn = open_db(args.db)
+
+    report = ingest(conn, config, directory, source=args.source, dry_run=args.dry_run)
+    if args.dry_run:
+        print("dry run -- nothing was written")
+    print(report.summary())
+    return 1 if report.files_rejected else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

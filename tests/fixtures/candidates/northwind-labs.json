@@ -1,0 +1,60 @@
+{
+  "company": "Northwind Labs",
+  "domain": "northwindlabs.test",
+  "generated_at": "2026-08-20T17:00:00Z",
+  "searches_used": 9,
+  "tool_calls_used": 12,
+  "budget_exhausted": false,
+  "candidates": [
+    {
+      "name": "Ada Lovelace",
+      "title": "Research Scientist",
+      "company": "Northwind Labs",
+      "email": "ada@northwindlabs.test",
+      "email_basis": "observed",
+      "evidence": [
+        {
+          "claim": "Ada Lovelace works at Northwind Labs as a Research Scientist",
+          "url": "https://northwindlabs.test/team",
+          "quote": "Ada Lovelace - Research Scientist, sequence models",
+          "retrieved_at": "2026-08-20T16:41:00Z"
+        },
+        {
+          "claim": "email is ada@northwindlabs.test",
+          "url": "https://arxiv.org/abs/0000.00001",
+          "quote": "Ada Lovelace (ada@northwindlabs.test), Northwind Labs",
+          "retrieved_at": "2026-08-20T16:44:00Z"
+        }
+      ],
+      "personalization": "I came across your work on long-context retrieval in the Northwind sequence-model paper, and the caching ablation in section 4 was the part I keep thinking about.",
+      "personalization_source_url": "https://arxiv.org/abs/0000.00001",
+      "confidence": 0.91,
+      "country": "US"
+    },
+    {
+      "name": "Grace Hopper",
+      "title": "Head of AI",
+      "company": "Northwind Labs",
+      "email": "grace@northwindlabs.test",
+      "email_basis": "inferred_from_pattern",
+      "evidence": [
+        {
+          "claim": "Grace Hopper works at Northwind Labs as Head of AI",
+          "url": "https://northwindlabs.test/about",
+          "quote": "Grace Hopper leads our AI group.",
+          "retrieved_at": "2026-08-20T16:47:00Z"
+        },
+        {
+          "claim": "email follows the first@ pattern at northwindlabs.test",
+          "url": "https://arxiv.org/abs/0000.00001",
+          "quote": "Ada Lovelace (ada@northwindlabs.test), Northwind Labs",
+          "retrieved_at": "2026-08-20T16:47:30Z"
+        }
+      ],
+      "personalization": null,
+      "personalization_source_url": null,
+      "confidence": 0.68,
+      "country": "US"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "company": "Kepler Systems, Inc.",
+  "domain": "keplersystems.test",
+  "generated_at": "2026-08-20T17:05:00Z",
+  "searches_used": 15,
+  "tool_calls_used": 15,
+  "budget_exhausted": true,
+  "candidates": [
+    {
+      "name": "Dr. Alan Turing",
+      "title": "Founder",
+      "company": "Kepler Systems, Inc.",
+      "email": "alan@keplersystems.test",
+      "email_basis": "observed",
+      "evidence": [
+        {
+          "claim": "Alan Turing is a founder at Kepler Systems",
+          "url": "https://keplersystems.test/about",
+          "quote": "Founded in 2024 by Alan Turing.",
+          "retrieved_at": "2026-08-20T17:01:00Z"
+        },
+        {
+          "claim": "email is alan@keplersystems.test",
+          "url": "https://github.com/example/kepler/commit/abc123",
+          "quote": "Author: Alan Turing <alan@keplersystems.test>",
+          "retrieved_at": "2026-08-20T17:02:00Z"
+        }
+      ],
+      "personalization": null,
+      "personalization_source_url": null,
+      "confidence": 0.83,
+      "country": "US"
+    }
+  ]
+}

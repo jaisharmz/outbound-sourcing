@@ -1,0 +1,29 @@
+# Multi-mailbox from day one. Retrofitting a pool onto a single-mailbox sender
+# is painful, so the pool exists even when it holds one entry.
+#
+# Realistic cold-outbound ceiling is 30-50/day/mailbox regardless of the
+# provider's nominal cap. See references/deliverability.md.
+
+mailboxes:
+  - id: console
+    provider: console
+    from:
+      name: Your Name
+      address: you@example.com
+    reply_to: null
+    daily_cap: 1000
+    enabled: true
+
+  - id: outreach-01
+    provider: gmail
+    from:
+      name: Your Name
+      address: you@sending-domain.com
+    # Cold sends go From the dedicated domain; replies land wherever you read
+    # mail. The From/Reply-To split keeps your primary address out of the
+    # reputation blast radius while still being the address people answer.
+    reply_to: you@your-institution.edu
+    auth_ref: GMAIL_TOKEN_OUTREACH_01     # key into secrets.env
+    daily_cap: 40
+    warmup_start_date: 2026-09-01
+    enabled: false

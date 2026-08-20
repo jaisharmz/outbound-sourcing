@@ -1,0 +1,55 @@
+name: default
+
+# Every test send goes here. Fire one at yourself before a campaign touches a
+# stranger -- the scheduler refuses to send from a mailbox that has not passed.
+test_recipient: you@example.com
+
+timezone: America/Los_Angeles
+daily_global_cap: 500
+
+sending_window:
+  days: [tue, wed, thu]
+  start: "08:00"
+  end: "16:00"
+  respect_recipient_timezone: true
+
+inter_send_delay:
+  distribution: uniform
+  min_seconds: 90
+  max_seconds: 420
+
+warmup:
+  enabled: true
+  start_per_day: 10
+  increment_per_day: 5
+
+circuit_breaker:
+  enabled: true
+  window_sends: 200
+  bounce_rate_threshold: 0.02
+
+verification:
+  enabled: true
+  chain: [mx, smtp, api]        # paid API runs only on what mx+smtp could not resolve
+  api_provider: none            # millionverifier | zerobounce | none
+  api_key_env: VERIFIER_API_KEY
+  smtp_timeout_seconds: 10
+  smtp_probe_from: probe@example.com
+  # PLACEHOLDER, not a rule. Most Workspace and M365 domains are accept-all, so
+  # expect catch_all to dominate. Revise from observed bounce rate once real
+  # sends exist rather than provisioning against a constraint that may not bind.
+  catch_all_daily_share: 0.20
+  catch_all_share_is_placeholder: true
+
+discovery:
+  subagent_tool_budget: 15
+  companies_per_batch: 5
+  cache_dir: state/cache
+  candidates_dir: state/candidates
+
+attachments_root: /path/to/your/attachments
+
+# `attachments` until documents are hosted on the sending domain; then flip to
+# `links` and let the A/B settle which performs better.
+step1_variant: attachments
+links_base_url: null

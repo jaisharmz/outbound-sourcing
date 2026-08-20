@@ -1,0 +1,33 @@
+steps:
+  - id: step1_initial
+    template: step1_initial.md
+    delay_business_days: 0
+    jitter_business_days: 0
+    attachment_set: first_touch
+
+  - id: step2_bump
+    template: step2_bump.md
+    delay_business_days: 4
+    jitter_business_days: 1
+    attachment_set: null
+
+  - id: step3_breakup
+    template: step3_breakup.md
+    delay_business_days: 7
+    jitter_business_days: 1
+    attachment_set: null
+
+attachment_sets:
+  first_touch:
+    dir: _first_email
+    files:
+      - example_document_a.pdf
+      - example_document_b.pdf
+  follow_up:
+    dir: _second_email
+    files:
+      - example_preprint_a.pdf
+      - example_preprint_b.pdf
+
+reply_templates:
+  interested: reply_interested.md
