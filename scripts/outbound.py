@@ -366,6 +366,22 @@ def test_email(
 def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
                    campaign: Optional[str], wait: int) -> bool:
     mb = cfg.mailboxes.get(mailbox_id)
+
+    # Check credentials before rendering. With --all-mailboxes an unauthorized
+    # pool would otherwise render and fail once per mailbox before saying why.
+    provider = providers.build(mb, cfg.secrets())
+    ok, detail = provider.verify_auth()
+    if not ok:
+        typer.secho(f"\n=== test send: mailbox {mailbox_id} ===", fg=typer.colors.CYAN)
+        typer.secho(f"  NOT AUTHORIZED: {detail}", fg=typer.colors.RED)
+        conn.execute(
+            "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash, to_addr,"
+            " ok, error, sent_at) VALUES (?,?,?,?,?,0,?,?)",
+            (mailbox_id, step_id, campaign or cfg.campaign.name,
+             templates.template_hash(cfg), cfg.campaign.test_recipient, detail, utcnow()),
+        )
+        return False
+
     contact, account = _fixture_contact()
     to = cfg.campaign.test_recipient
     contact["email"] = to
@@ -393,7 +409,6 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
     else:
         typer.echo("  attachments: (none)")
 
-    provider = providers.build(mb, cfg.secrets())
     result = provider.send(rendered)
 
     conn.execute(
