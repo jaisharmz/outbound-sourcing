@@ -52,6 +52,77 @@ AGGREGATOR_HOSTS = {
 }
 
 
+
+# A source run's `excluded` list answers "is this company part of this field?",
+# which is a topical judgment and not a statement about prospect quality. Pinecone
+# is excluded from a memory map for shipping a vector index rather than a
+# retention policy; that says nothing about whether it wants a collaboration. So
+# exclusions are imported for triage, not dropped -- except for the kinds that are
+# genuinely never targets, which are named by pattern in icp.yaml.
+
+CATEGORY_MARKERS = (
+    "generally", "cohort", "and similar", "the application layer", "harnesses",
+    "and the ", "layer generally", "et al",
+)
+
+
+def _is_category(fragment: str) -> bool:
+    """True when a fragment names a category rather than a company."""
+    f = fragment.strip()
+    if not f or len(f.split()) > 5:
+        return True
+    if f[:1].islower():
+        return True
+    return any(m in f.lower() for m in CATEGORY_MARKERS)
+
+
+def split_company_names(name: str) -> list[str]:
+    """Split a grouped label into individual companies.
+
+    Roughly a quarter of real `excluded` entries name several companies in one
+    string -- "Pinecone, Weaviate, LangChain, LlamaIndex" or "Hailo, Axelera AI,
+    Blaize". Those are not valid account rows. Parenthetical content is handled
+    separately, since it is sometimes a qualifier ("Protect AI (Palo Alto
+    Networks)") and sometimes where the actual list lives ("Coding agent
+    harnesses generally (Cursor, OpenClaw and similar)").
+    """
+    raw = name.strip()
+    paren = re.findall(r"\(([^)]*)\)", raw)
+    outer = re.sub(r"\s*\([^)]*\)", "", raw).strip()
+
+    def parts(text: str) -> list[str]:
+        pieces = re.split(r",\s*|\s+and\s+", text)
+        return [p.strip(" .,") for p in pieces if p.strip(" .,")]
+
+    outer_parts = parts(outer)
+    if len(outer_parts) > 1:
+        kept = [p for p in outer_parts if not _is_category(p)]
+        if len(kept) > 1:
+            return kept
+        if kept and not paren:
+            return kept
+
+    # The outer text was a single label. If it is a category and the parentheses
+    # hold a list, that list is the real content.
+    if paren and _is_category(outer):
+        inner = [p for p in parts(paren[0]) if not _is_category(p)]
+        if len(inner) > 1:
+            return inner
+
+    return [raw]
+
+
+def auto_drop_reason(reason: str | None, patterns: list[str]) -> str | None:
+    """Return the pattern that marks this exclusion as never-a-target."""
+    if not reason:
+        return None
+    low = reason.lower()
+    for pat in patterns:
+        if pat.lower() in low:
+            return pat
+    return None
+
+
 @dataclass
 class CompanyRecord:
     name: str
@@ -67,6 +138,9 @@ class CompanyRecord:
     source: str = "list"
     source_ref: str | None = None
     excluded_reason: str | None = None
+    # Why a source run set this company aside. Kept as context for triage, not
+    # as a rejection.
+    source_note: str | None = None
 
 
 @dataclass
@@ -79,6 +153,9 @@ class DiscoveryReport:
     skipped_tier: list[str] = field(default_factory=list)
     no_domain: list[str] = field(default_factory=list)
     no_tier: list[str] = field(default_factory=list)
+    needs_triage: list[str] = field(default_factory=list)
+    auto_dropped: list[str] = field(default_factory=list)
+    split_names: list[str] = field(default_factory=list)
     degraded_run: str | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -96,6 +173,19 @@ class DiscoveryReport:
                 f"no domain candidate: {len(self.no_domain)} -- these need resolution "
                 f"before people discovery: {', '.join(self.no_domain[:5])}"
                 + (" ..." if len(self.no_domain) > 5 else "")
+            )
+        if self.split_names:
+            lines.append(f"grouped names split into rows: {len(self.split_names)}")
+            for x in self.split_names[:4]:
+                lines.append(f"    {x}")
+        if self.auto_dropped:
+            lines.append(f"auto-dropped as never-a-target: {len(self.auto_dropped)}")
+            for x in self.auto_dropped[:4]:
+                lines.append(f"    {x}")
+        if self.needs_triage:
+            lines.append(
+                f"source-run exclusions kept for triage: {len(self.needs_triage)} "
+                f"(topical judgments, not prospect quality) -- outbound accounts --needs-triage"
             )
         if self.no_tier:
             lines.append(
@@ -313,18 +403,32 @@ def from_industry_run(config: Config, run_dir: Path, tiers: set[str]) -> tuple[l
             source_ref=str(run_dir),
         ))
 
-    # Companies someone already decided against. Recorded so a later run does not
-    # quietly re-surface them.
+    # The source run's exclusions. Imported for triage rather than dropped: its
+    # inclusion test is topical and answers a different question than ours.
+    drop_patterns = config.icp.auto_drop_reason_patterns
     for ex in block.get("excluded") or []:
         if not isinstance(ex, dict) or not ex.get("name"):
             continue
-        records.append(CompanyRecord(
-            name=str(ex["name"]),
-            source="industry",
-            source_ref=str(run_dir),
-            evidence_url=str(ex.get("evidence") or "") or None,
-            excluded_reason=str(ex.get("why") or "excluded by the source run")[:500],
-        ))
+        why = str(ex.get("why") or "excluded by the source run")[:500]
+        matched = auto_drop_reason(why, drop_patterns)
+        names = split_company_names(str(ex["name"]))
+        if len(names) > 1:
+            report.split_names.append(f"{ex['name']} -> {', '.join(names)}")
+        for n in names:
+            if matched:
+                report.auto_dropped.append(f"{n} (matched {matched!r})")
+                records.append(CompanyRecord(
+                    name=n, source="industry", source_ref=str(run_dir),
+                    evidence_url=str(ex.get("evidence") or "") or None,
+                    excluded_reason=f"auto-dropped, matched {matched!r}: {why}",
+                ))
+            else:
+                report.needs_triage.append(n)
+                records.append(CompanyRecord(
+                    name=n, source="industry", source_ref=str(run_dir),
+                    evidence_url=str(ex.get("evidence") or "") or None,
+                    source_note=f"excluded by the source run as off-topic for it: {why}",
+                ))
     return records, report
 
 
@@ -423,12 +527,13 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
                 " ships = COALESCE(?, ships), subproblems = COALESCE(?, subproblems),"
                 " evidence_url = COALESCE(?, evidence_url),"
                 " excluded_reason = COALESCE(?, excluded_reason),"
+                " source_note = COALESCE(?, source_note),"
                 " status = ?, updated_at = ? WHERE id = ?",
                 (r.tier, r.campaign, r.domain, r.domain, r.domain_confidence,
                  r.what, r.entry_note,
                  int(r.ships) if r.ships is not None else None,
                  ",".join(r.subproblems) or None, r.evidence_url, r.excluded_reason,
-                 status, utcnow(), row["id"]),
+                 r.source_note, status, utcnow(), row["id"]),
             )
             if status == "excluded":
                 report.excluded += 1
@@ -438,13 +543,13 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
             conn.execute(
                 "INSERT INTO accounts (name, name_normalized, domain, source, source_ref,"
                 " status, excluded_reason, tier, campaign, what, entry_note, ships,"
-                " subproblems, evidence_url, domain_confidence, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " subproblems, evidence_url, domain_confidence, source_note,"
+                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (r.name, key, r.domain, r.source, r.source_ref, status, r.excluded_reason,
                  r.tier, r.campaign, r.what, r.entry_note,
                  int(r.ships) if r.ships is not None else None,
                  ",".join(r.subproblems) or None, r.evidence_url, r.domain_confidence,
-                 utcnow(), utcnow()),
+                 r.source_note, utcnow(), utcnow()),
             )
             if status == "excluded":
                 report.excluded += 1

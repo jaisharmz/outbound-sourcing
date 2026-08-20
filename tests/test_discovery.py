@@ -137,11 +137,41 @@ def test_optional_keys_are_tolerated(campaigns):
     assert by_name["Funded Startup"].subproblems == []
 
 
-def test_excluded_companies_are_carried_with_their_reason(campaigns):
-    records, _ = from_industry_run(campaigns, RUN, TIERS)
+def test_source_run_exclusions_go_to_triage_not_the_bin(campaigns):
+    """A field map's inclusion test is topical. Pinecone being off-topic for a
+    memory map says nothing about whether it wants a collaboration."""
+    records, report = from_industry_run(campaigns, RUN, TIERS)
+    ex = [r for r in records if r.source_note]
+    assert [r.name for r in ex] == ["Excluded Co"]
+    assert "different thing" in ex[0].source_note
+    assert ex[0].excluded_reason is None
+    assert "Excluded Co" in report.needs_triage
+
+
+def test_auto_drop_patterns_remove_the_never_targets(campaigns, config_root):
+    path = config_root / "icp.yaml"
+    path.write_text(path.read_text()
+                    + "\nauto_drop_reason_patterns:\n  - different thing entirely\n")
+    from scripts.config import Config
+    records, report = from_industry_run(Config(config_root), RUN, TIERS)
     ex = [r for r in records if r.excluded_reason]
     assert [r.name for r in ex] == ["Excluded Co"]
-    assert "different thing" in ex[0].excluded_reason
+    assert "auto-dropped" in ex[0].excluded_reason
+    assert report.auto_dropped and not report.needs_triage
+
+
+def test_grouped_names_are_split_before_triage(campaigns, tmp_path):
+    """Roughly a quarter of real exclusions name several companies in one string."""
+    import shutil, json
+    dst = tmp_path / "run"
+    shutil.copytree(RUN, dst)
+    text = (dst / "landscape.md").read_text().replace(
+        "  - name: Excluded Co", "  - name: Alpha, Beta and Gamma")
+    (dst / "landscape.md").write_text(text)
+    records, report = from_industry_run(campaigns, dst, TIERS)
+    names = {r.name for r in records if r.source_note}
+    assert names == {"Alpha", "Beta", "Gamma"}
+    assert report.split_names
 
 
 def test_degraded_run_is_reported(campaigns):
@@ -183,7 +213,11 @@ def test_upsert_writes_accounts(conn, campaigns):
     rows = {r["name"]: r for r in conn.execute("SELECT * FROM accounts")}
     assert rows["Homepage Startup"]["campaign"] == "startup"
     assert rows["Homepage Startup"]["status"] == "degraded"
-    assert rows["Excluded Co"]["status"] == "excluded"
+    # Not excluded: it carries the source run's note and re-queues like any
+    # other account from a degraded run.
+    assert rows["Excluded Co"]["status"] == "degraded"
+    assert rows["Excluded Co"]["excluded_reason"] is None
+    assert "different thing" in rows["Excluded Co"]["source_note"]
     assert rows["Arxiv Lab"]["domain"] is None
     assert rows["Arxiv Lab"]["domain_confidence"] == "aggregator"
 
@@ -196,12 +230,16 @@ def test_reimport_is_idempotent(conn, campaigns):
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == n1
 
 
-def test_exclusion_is_sticky(conn, campaigns):
-    """Someone decided against this company. A later run listing it must not
+def test_auto_dropped_exclusion_is_sticky(conn, campaigns, config_root):
+    """An auto-drop is a decision. A later run listing the company must not
     quietly put it back in the queue."""
-    records, report = from_industry_run(campaigns, RUN, TIERS)
-    upsert(conn, records, report)
+    path = config_root / "icp.yaml"
+    path.write_text(path.read_text()
+                    + "\nauto_drop_reason_patterns:\n  - different thing entirely\n")
+    from scripts.config import Config
     from scripts.discover_companies import CompanyRecord
+    records, report = from_industry_run(Config(config_root), RUN, TIERS)
+    upsert(conn, records, report)
     upsert(conn, [CompanyRecord(name="Excluded Co", tier="startup", campaign="startup",
                                 domain="excludedco.test", source="list")], DiscoveryReport())
     assert conn.execute(
@@ -283,7 +321,7 @@ def test_report_json_optional_keys(campaigns):
     by_name = {r.name: r for r in records}
     assert by_name["Json Startup"].domain == "jsonstartup.test"
     assert by_name["Json Lab"].domain is None          # arXiv evidence url
-    assert by_name["Json Excluded"].excluded_reason == "Off topic."
+    assert by_name["Json Excluded"].source_note.endswith("Off topic.")
 
 
 def test_one_malformed_record_does_not_cost_the_whole_block():

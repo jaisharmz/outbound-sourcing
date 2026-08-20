@@ -117,6 +117,10 @@ class ICP(Strict):
     exclude_regions: list[str] = Field(default_factory=lambda: ["EU", "UK", "EEA", "CH"])
     exclude_domains: list[str] = Field(default_factory=list)
     exclude_companies: list[str] = Field(default_factory=list)
+    # Applied to the reason a source run gave for setting a company aside. These
+    # are the kinds that are never targets whatever the campaign; everything else
+    # goes to triage rather than being dropped.
+    auto_drop_reason_patterns: list[str] = Field(default_factory=list)
     max_contacts_per_company: int = 3
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 

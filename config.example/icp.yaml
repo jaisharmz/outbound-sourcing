@@ -30,5 +30,26 @@ exclude_domains:
 exclude_companies:
   - Example Excluded Co
 
+# Applied to the reason a source run gave for setting a company aside. Anything
+# matched here is dropped as never-a-target; everything else goes to triage.
+# These are deliberately narrow -- a false positive silently loses a viable
+# company, a false negative just means one more row to sort by hand.
+auto_drop_reason_patterns:
+  # advocacy, policy and grantmaking organisations rather than research
+  - advocacy and grantmaking
+  - advocacy for an enforced
+  - policy critique
+  - not technical safety work
+  - near-term deployment harms
+  - explicitly not a frontier-risk
+  - moral status and model welfare
+  # infrastructure landlords rather than AI companies
+  - real estate and megawatts
+  - powered shells
+  # nothing findable to write to
+  - I found no product
+  - no listed team
+  - solely as an affiliation string
+
 max_contacts_per_company: 3
 min_confidence: 0.5
