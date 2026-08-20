@@ -1,0 +1,12 @@
+{
+  "meta": {"topic": "example"},
+  "orgs": [
+    {"name": "Json Startup", "tier": "startup", "url": "https://jsonstartup.test/",
+     "what": "Ships it.", "subproblems": ["a"], "ships": true, "entry": "Hiring.",
+     "evidence": "https://jsonstartup.test/blog", "stage": "seed", "raised": "$5M",
+     "investors": ["Fund"], "headcount": 12},
+    {"name": "Json Lab", "tier": "frontier-lab", "url": "https://arxiv.org/abs/1234.5678",
+     "what": "Publishes.", "ships": true}
+  ],
+  "excluded": [{"name": "Json Excluded", "why": "Off topic."}]
+}

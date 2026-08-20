@@ -260,3 +260,61 @@ def test_missing_list_file_is_an_error(tmp_path, campaigns):
     from scripts.errors import ConfigError
     with pytest.raises(ConfigError, match="not found"):
         from_name_list(tmp_path / "nope.txt", "list", campaigns)
+
+
+# ------------------------------------------------------------ source chain
+
+BROKEN = ROOT / "fixtures" / "industry_run_broken"
+REPORT = ROOT / "fixtures" / "industry_run_report"
+
+
+def test_report_json_is_preferred_over_the_markdown_block(campaigns):
+    """report.json carries the same structures as real JSON, so it cannot be
+    lost to a YAML quoting mistake in prose."""
+    records, report = from_industry_run(campaigns, REPORT, TIERS)
+    names = {r.name for r in records}
+    assert "Json Startup" in names
+    assert "Should Not Be Used" not in names
+    assert any("report.json" in w for w in report.warnings)
+
+
+def test_report_json_optional_keys(campaigns):
+    records, _ = from_industry_run(campaigns, REPORT, TIERS)
+    by_name = {r.name: r for r in records}
+    assert by_name["Json Startup"].domain == "jsonstartup.test"
+    assert by_name["Json Lab"].domain is None          # arXiv evidence url
+    assert by_name["Json Excluded"].excluded_reason == "Off topic."
+
+
+def test_one_malformed_record_does_not_cost_the_whole_block():
+    """A single bad record otherwise takes out an entire run: one real file has
+    `what: "Critique of World Model," at v5 ...` and lost ~30 companies to it."""
+    from scripts.discover_companies import DiscoveryReport as R
+    rep = R()
+    block = read_yaml_block(BROKEN / "landscape.md", rep)
+    names = {o["name"] for o in block["orgs"]}
+    assert names == {"Good One", "Good Two"}
+    assert "Broken Record" not in names
+    assert any("dropped 1" in w for w in rep.warnings)
+
+
+def test_salvage_still_recovers_the_excluded_list():
+    from scripts.discover_companies import DiscoveryReport as R
+    block = read_yaml_block(BROKEN / "landscape.md", R())
+    assert [e["name"] for e in block["excluded"]] == ["Excluded One"]
+
+
+def test_salvage_reports_what_it_dropped(campaigns):
+    """Silent truncation reads as coverage. It has to be said out loud."""
+    _, report = from_industry_run(campaigns, BROKEN, TIERS)
+    assert any("YAML syntax error" in w and "dropped" in w for w in report.warnings)
+
+
+def test_frontmatter_fallback_marks_records_as_needing_a_tier(campaigns, tmp_path):
+    import shutil
+    dst = tmp_path / "run"
+    shutil.copytree(RUN, dst)
+    (dst / "landscape.md").write_text("# Landscape\n")
+    _, report = from_industry_run(campaigns, dst, TIERS)
+    assert report.no_tier
+    assert "cannot enroll" in report.summary()

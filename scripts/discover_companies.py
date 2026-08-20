@@ -78,6 +78,7 @@ class DiscoveryReport:
     excluded: int = 0
     skipped_tier: list[str] = field(default_factory=list)
     no_domain: list[str] = field(default_factory=list)
+    no_tier: list[str] = field(default_factory=list)
     degraded_run: str | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -96,6 +97,11 @@ class DiscoveryReport:
                 f"before people discovery: {', '.join(self.no_domain[:5])}"
                 + (" ..." if len(self.no_domain) > 5 else "")
             )
+        if self.no_tier:
+            lines.append(
+                f"no tier: {len(self.no_tier)} imported name-only and cannot enroll in a "
+                f"campaign until a tier is assigned (outbound accounts --needs-triage)"
+            )
         if self.degraded_run:
             lines.append(
                 f"DEGRADED SOURCE RUN: {self.degraded_run}\n"
@@ -110,7 +116,61 @@ class DiscoveryReport:
 # ------------------------------------------------------------------ industry
 
 
-def read_yaml_block(path: Path) -> dict[str, Any] | None:
+def read_report_json(run_dir: Path) -> dict[str, Any] | None:
+    """`report.json`, the cleanest surface when a run has one.
+
+    It carries the same `orgs` and `excluded` structures as `landscape.md` but as
+    real JSON, so it cannot be lost to a YAML quoting mistake in prose. Present
+    in 6 of 11 runs sampled.
+    """
+    path = run_dir / "report.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data.get("orgs"):
+        return None
+    return data
+
+
+def _salvage_orgs(text: str) -> tuple[list[dict], int]:
+    """Parse a list-of-mappings block one record at a time.
+
+    A single malformed record otherwise costs the entire block, and therefore an
+    entire run. One real file contains `what: "Critique of World Model," at v5
+    ...` -- a quoted scalar followed by bare text -- which is a YAML error that
+    took out 760 lines and about thirty companies. Skip the bad record, keep the
+    rest, and report how many were dropped.
+    """
+    items, dropped, current = [], 0, []
+
+    def flush():
+        nonlocal dropped
+        if not current:
+            return
+        try:
+            parsed = yaml.safe_load("\n".join(current))
+        except yaml.YAMLError:
+            dropped += 1
+            return
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            items.append(parsed[0])
+        else:
+            dropped += 1
+
+    for line in text.splitlines():
+        if re.match(r"^\s*- ", line):
+            flush()
+            current = [line]
+        elif current:
+            current.append(line)
+    flush()
+    return items, dropped
+
+
+def read_yaml_block(path: Path, report: "DiscoveryReport | None" = None) -> dict[str, Any] | None:
     """Pull the fenced YAML block out of an industry-research markdown file."""
     if not path.exists():
         return None
@@ -120,11 +180,43 @@ def read_yaml_block(path: Path) -> dict[str, Any] | None:
         end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("```"))
     except StopIteration:
         return None
+    body = lines[start + 1:end]
     try:
-        data = yaml.safe_load("\n".join(lines[start + 1:end]))
+        data = yaml.safe_load("\n".join(body))
+        if isinstance(data, dict):
+            return data
     except yaml.YAMLError:
+        pass
+
+    # Whole-block parse failed. Recover the sections we actually need.
+    out: dict[str, Any] = {}
+    sections: dict[str, list[str]] = {}
+    key = None
+    for line in body:
+        # A top-level key starts at column zero. One carrying an inline value
+        # (`investors: []`) still ends the previous section -- otherwise it gets
+        # swallowed into it and corrupts the last record there.
+        m = re.match(r"^(\w+):(.*)$", line)
+        if m:
+            key = m.group(1) if not m.group(2).strip() else None
+            if key:
+                sections[key] = []
+        elif key:
+            sections[key].append(line)
+    total_dropped = 0
+    for name in ("orgs", "excluded"):
+        if name in sections:
+            items, dropped = _salvage_orgs("\n".join(sections[name]))
+            out[name] = items
+            total_dropped += dropped
+    if not out:
         return None
-    return data if isinstance(data, dict) else None
+    if report is not None:
+        report.warnings.append(
+            f"{path.name} has a YAML syntax error; recovered "
+            f"{len(out.get('orgs', []))} orgs record-by-record and dropped {total_dropped}"
+        )
+    return out
 
 
 def read_run_json(run_dir: Path) -> dict[str, Any]:
@@ -177,7 +269,11 @@ def from_industry_run(config: Config, run_dir: Path, tiers: set[str]) -> tuple[l
         note = detail.get("websearch") if isinstance(detail, dict) else str(detail)
         report.degraded_run = str(note)[:200]
 
-    block = read_yaml_block(run_dir / "landscape.md")
+    block = read_report_json(run_dir)
+    if block:
+        report.warnings.append("read orgs from report.json")
+    else:
+        block = read_yaml_block(run_dir / "landscape.md", report)
     if not block:
         report.warnings.append(
             f"{run_dir/'landscape.md'} has no parseable YAML block; falling back to the "
@@ -249,6 +345,7 @@ def _from_avenue_frontmatter(run_dir: Path, tiers: set[str],
             names.add(str(n).strip())
     if not names:
         report.warnings.append(f"{run_dir/'avenues'} yielded no key_companies either")
+    report.no_tier.extend(sorted(names))
     return [
         CompanyRecord(name=n, source="industry", source_ref=str(run_dir),
                       domain_confidence="unknown")

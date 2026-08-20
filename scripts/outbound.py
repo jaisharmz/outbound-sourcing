@@ -134,6 +134,8 @@ def accounts_cmd(
     campaign: Optional[str] = typer.Option(None, "--campaign"),
     status: Optional[str] = typer.Option(None, "--status"),
     needs_domain: bool = typer.Option(False, "--needs-domain"),
+    needs_triage: bool = typer.Option(False, "--needs-triage",
+                                      help="imported without a tier, so cannot enroll"),
     db: Optional[str] = typer.Option(None, "--db"),
     limit: int = typer.Option(40, "--limit"),
 ):
@@ -146,6 +148,8 @@ def accounts_cmd(
         where.append("status = ?"); params.append(status)
     if needs_domain:
         where.append("domain IS NULL AND status != 'excluded'")
+    if needs_triage:
+        where.append("tier IS NULL AND status != 'excluded'")
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     rows = conn.execute(
         f"SELECT name, tier, campaign, domain, domain_confidence, status FROM accounts"

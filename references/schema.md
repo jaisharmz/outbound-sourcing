@@ -143,7 +143,10 @@ Three modes, one table. Nothing downstream cares which produced a row.
 
 Read from the run directory, in this order:
 
-1. **`landscape.md`'s fenced YAML block** — the real source. Its `orgs` list carries
+0. **`report.json`** — the cleanest surface, present in 6 of 11 runs sampled. Same `orgs`
+   and `excluded` structures as `landscape.md`, but real JSON, so it cannot be lost to a
+   YAML quoting mistake made in prose.
+1. **`landscape.md`'s fenced YAML block** — the fallback. Its `orgs` list carries
    `name`, `tier`, `url`, `what`, `subproblems`, `ships`, `entry` and `evidence` on every
    entry, and sometimes `stage`, `raised`, `investors`, `headcount`. Its `excluded` list
    carries companies someone already ruled out, with the reason.
@@ -167,6 +170,12 @@ that is derived is stored as a `candidate` — never as a fact. `outbound accoun
 runs and not others. `stage`/`raised`/`investors`/`headcount` appear in one run of three.
 Depend only on what has held: `name`, `tier`, `url`, and the avenue frontmatter's ten keys,
 which have been stable.
+
+**One malformed record must not cost a whole run.** A real file contains
+`what: "Critique of World Model," at v5 ...` — a quoted scalar followed by bare text. That
+is a YAML error, and it took out a 760-line block and roughly thirty companies. When the
+block fails to parse whole, it is re-parsed record by record: the bad one is skipped, the
+rest are kept, and the count dropped is reported. Silent truncation reads as coverage.
 
 **Runs can be incomplete or degraded.** One run on disk has an empty `avenues/` directory.
 Two of three sampled runs exhausted the WebSearch cap before starting, which `run.json`
