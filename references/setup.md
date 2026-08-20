@@ -63,11 +63,31 @@ https://www.googleapis.com/auth/gmail.compose      # drafts for interested repli
 Client ID and secret go in `config/secrets.env`, which is gitignored. Each mailbox's
 refresh token lands under its `auth_ref` key.
 
-**Check this before anything else if any mailbox lives on an institutional tenant:** many
+**Check this before anything else if any mailbox lives on an institutional tenant.** Many
 campus and enterprise Workspace tenants block third-party OAuth clients from holding
-`gmail.send`. It is an admin policy, not a code problem, and it is better discovered on
-day one than during milestone 3. If it is blocked, that account can still be the
-`Reply-To` — it just cannot be a sender.
+`gmail.send`, via Admin Console → Security → API Controls. Whether a given tenant does is
+usually not documented publicly, so **test it rather than reasoning about it**:
+
+```bash
+python -m scripts.outbound auth --mailbox <id>
+```
+
+The command names the failure mode rather than echoing a stack trace, because these are
+not interchangeable:
+
+| Result | Meaning |
+|---|---|
+| authorized | The tenant permits it. Proceed. |
+| `admin_policy_enforced` | API Controls block this client. An admin must allowlist the client ID. Not fixable in code. |
+| `access_denied` | Consent declined, **or** the app is in Testing mode and this account is not on the test-users list, **or** the tenant blocks unverified apps. |
+| `org_internal` | The consent screen is Internal; only accounts in that org can authorize. |
+| HTTP 403 `domainPolicy` | Auth succeeded but the API call is blocked for this account. |
+
+A consumer Gmail account has no admin, so it will authorize — subject to the unverified-app
+warning screen, which the account owner can click through.
+
+If an institutional account is blocked, it still works as `Reply-To`. It just cannot be a
+sender, which is the arrangement you want anyway.
 
 ### 5. Landing page (before the links A/B)
 

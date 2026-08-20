@@ -70,9 +70,18 @@ reimplements. Run them from the skill directory with the venv active.
 | `outbound cc-resolve --domain --campaign --step` | Show which CC rule wins and why. |
 | `outbound suppress add <value> --kind email\|domain\|company` | Permanent, global. |
 | `outbound demo` | End-to-end on fixtures through the console mailbox. No network. |
+| `outbound auth --mailbox <id>` | OAuth for one mailbox. Names the exact failure mode. |
+| `outbound test-email --mailbox <id> --step <id>` \| `--all-mailboxes` | Real email to `test_recipient`, then prints outgoing **and delivered** headers with SPF/DKIM/DMARC verdicts. |
 
-Milestones 3 onward add: `test-email`, `discover`, `verify`, `review`, `send_queue`,
-`watch_replies`, `report`. This table grows with them.
+Milestones 4 onward add: `discover`, `verify`, `review`, `send_queue`, `watch_replies`,
+`report`. This table grows with them.
+
+**Two gates block a campaign and are not to be worked around.** `validate-config` exits
+non-zero while any campaign blocker is unresolved — a placeholder mailing address is one,
+since CAN-SPAM requires a real one and the footer ships on every template. And an
+attachment set over `max_attachment_bytes` (wire size, default 5 MB) hard-fails at config
+load, because an oversized set bounces for reasons unrelated to address quality and can
+trip the circuit breaker on a false signal.
 
 ## Running discovery
 

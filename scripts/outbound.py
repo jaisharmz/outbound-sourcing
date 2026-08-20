@@ -14,7 +14,7 @@ from typing import Optional
 import typer
 
 from .cc import resolve as resolve_cc
-from .config import Config, load_config
+from .config import Config, load_config, wire_size
 from .db import open_db, transaction, utcnow
 from .errors import ConfigError
 from .ingest_candidates import ingest
@@ -57,12 +57,26 @@ def validate_config(config: Optional[str] = typer.Option(None, "--config")):
     typer.echo(f"  sequence:    {' -> '.join(s.id for s in cfg.sequence.steps)}")
     typer.echo(f"  dorks:       {len(cfg.dorks)} search seeds")
     typer.echo(f"  templates:   hash {templates.template_hash(cfg)}")
+    typer.echo(f"  attachments: max {cfg.campaign.max_attachment_bytes/1_000_000:.2f} MB "
+               f"on the wire per set")
     if cfg.campaign.verification.catch_all_share_is_placeholder:
         typer.secho(
             "  note: verification.catch_all_daily_share is still flagged a placeholder. "
             "Revise it from observed bounce rate after real sends.",
             fg=typer.colors.YELLOW,
         )
+
+    blockers = cfg.preflight("campaign")
+    if blockers:
+        typer.secho(f"\nCAMPAIGN BLOCKERS ({len(blockers)}) -- config is structurally valid, "
+                    f"but no campaign may start until these are resolved:",
+                    fg=typer.colors.RED)
+        for b in blockers:
+            typer.echo(f"  - {b}")
+        typer.secho("\nTest sends to your own address still work; they render the "
+                    "placeholder so you can see exactly what would ship.",
+                    fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
 
 
 # ------------------------------------------------------------------ db
@@ -256,6 +270,194 @@ def suppress_list(db: Optional[str] = typer.Option(None, "--db")):
         return
     for r in rows:
         typer.echo(f"  {r['kind']:<8} {r['value']:<40} {r['reason']}  {r['created_at']}")
+
+
+# ------------------------------------------------------------------ auth
+
+
+@app.command("auth")
+def auth_cmd(
+    mailbox: str = typer.Option(..., "--mailbox"),
+    config: Optional[str] = typer.Option(None, "--config"),
+):
+    """Run the OAuth flow for one mailbox and say precisely what happened.
+
+    The failure modes matter and are not interchangeable: a declined consent is
+    fixable by retrying, while an admin policy that forbids the scope is not
+    fixable in code at all.
+    """
+    cfg = _config(config)
+    mb = cfg.mailboxes.get(mailbox)
+    if mb.provider == "console":
+        typer.secho("console mailbox needs no authorization", fg=typer.colors.GREEN)
+        return
+
+    provider = providers.build(mb, cfg.secrets())
+    typer.echo(f"authorizing {mb.id} ({mb.from_.address}) for scopes:")
+    from .providers.gmail import SCOPES
+
+    for scope in SCOPES:
+        typer.echo(f"  {scope}")
+    typer.echo("a browser window will open; complete consent there\n")
+
+    try:
+        ok, message = provider.authorize()
+    except Exception as exc:
+        _err(str(exc))
+        raise typer.Exit(2)
+
+    if ok:
+        typer.secho(message, fg=typer.colors.GREEN)
+        typer.echo(f"token stored at state/tokens/{mb.id}.json (mode 600)")
+    else:
+        typer.secho(message, fg=typer.colors.RED, err=True)
+        raise typer.Exit(1)
+
+
+# ------------------------------------------------------------------ test send
+
+
+@app.command("test-email")
+def test_email(
+    mailbox: Optional[str] = typer.Option(None, "--mailbox"),
+    step: str = typer.Option("step1_initial", "--step"),
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    all_mailboxes: bool = typer.Option(False, "--all-mailboxes"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+    wait: int = typer.Option(30, "--wait", help="seconds to wait for the delivered copy"),
+):
+    """Send a fully real email to test_recipient and print what actually went out.
+
+    Real template, real persona, real attachments, real CC list, real footer,
+    real headers. This is the gate: the scheduler refuses to send from a mailbox
+    that has never passed one, and refuses to start a campaign whose templates
+    changed since the last one.
+    """
+    cfg = _config(config)
+    conn = open_db(db)
+
+    blockers = cfg.preflight("campaign")
+    if blockers:
+        typer.secho(f"note: {len(blockers)} campaign blocker(s) are unresolved. The test "
+                    f"send still goes out so you can see exactly what would ship:",
+                    fg=typer.colors.YELLOW)
+        for b in blockers:
+            typer.echo(f"  - {b.splitlines()[0]}")
+        typer.echo("")
+
+    if all_mailboxes:
+        targets = [m.id for m in cfg.mailboxes.enabled()]
+    elif mailbox:
+        targets = [mailbox]
+    else:
+        _err("pass --mailbox <id> or --all-mailboxes")
+        raise typer.Exit(2)
+
+    failures = 0
+    for mailbox_id in targets:
+        if not _one_test_send(cfg, conn, mailbox_id, step, campaign, wait):
+            failures += 1
+    if failures:
+        raise typer.Exit(1)
+
+
+def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
+                   campaign: Optional[str], wait: int) -> bool:
+    mb = cfg.mailboxes.get(mailbox_id)
+    contact, account = _fixture_contact()
+    to = cfg.campaign.test_recipient
+    contact["email"] = to
+
+    rendered = _render_for(cfg, conn, step_id, contact, account, campaign,
+                           mailbox_id=mailbox_id)
+    rendered.to = to
+
+    typer.secho(f"\n=== test send: mailbox {mailbox_id}, step {step_id} ===",
+                fg=typer.colors.CYAN)
+    typer.echo(f"  from:        {rendered.from_header}")
+    typer.echo(f"  reply-to:    {rendered.reply_to or '(none)'}")
+    typer.echo(f"  to:          {rendered.to}")
+    typer.echo(f"  cc:          {', '.join(rendered.cc) or '(none)'}")
+    typer.echo(f"  bcc:         {', '.join(rendered.bcc) or '(none)'}")
+    typer.echo(f"  recipients:  {rendered.recipient_count} (what the daily cap counts)")
+    typer.echo(f"  variant:     {rendered.variant}")
+    typer.echo(f"  template:    {rendered.template_hash}")
+    if rendered.attachments:
+        typer.echo("  attachments:")
+        for a in rendered.attachments:
+            typer.echo(f"    {a.path}  {a.size/1_000_000:.2f} MB")
+        typer.echo(f"    total on the wire: "
+                   f"{wire_size(rendered.attachment_bytes)/1_000_000:.2f} MB")
+    else:
+        typer.echo("  attachments: (none)")
+
+    provider = providers.build(mb, cfg.secrets())
+    result = provider.send(rendered)
+
+    conn.execute(
+        "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash, to_addr,"
+        " ok, headers, error, sent_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (mailbox_id, step_id, campaign or cfg.campaign.name, rendered.template_hash, to,
+         int(result.ok), result.headers, result.error, utcnow()),
+    )
+
+    if not result.ok:
+        typer.secho(f"  FAILED: {result.error}", fg=typer.colors.RED)
+        return False
+
+    typer.secho(f"  sent: message {result.message_id} thread {result.thread_id}",
+                fg=typer.colors.GREEN)
+
+    typer.echo("\n  --- outgoing headers ---")
+    for line in (result.headers or "").splitlines():
+        typer.echo(f"  {line}")
+
+    delivered = None
+    if hasattr(provider, "delivered_headers") and wait > 0:
+        typer.echo(f"\n  waiting up to {wait}s for the delivered copy "
+                   f"(SPF/DKIM/DMARC results only exist on it, not on the sent copy)...")
+        delivered = provider.delivered_headers(rendered.subject, timeout_seconds=wait)
+
+    if delivered:
+        typer.echo("\n  --- delivered headers ---")
+        for line in delivered.splitlines():
+            typer.echo(f"  {line}")
+        conn.execute(
+            "UPDATE test_sends SET headers = ? WHERE id = (SELECT MAX(id) FROM test_sends)",
+            ((result.headers or "") + "\n\n--- delivered ---\n" + delivered,),
+        )
+        _summarize_auth(delivered)
+    else:
+        typer.secho(
+            "\n  no delivered copy found in this mailbox. That is expected when "
+            "test_recipient is a different account -- open the message in Gmail and use "
+            "'Show original' to read Authentication-Results.",
+            fg=typer.colors.YELLOW,
+        )
+    return True
+
+
+def _summarize_auth(headers: str) -> None:
+    """Read SPF/DKIM/DMARC verdicts off the delivered copy."""
+    line = next(
+        (l for l in headers.splitlines() if l.lower().startswith("authentication-results")),
+        "",
+    ).lower()
+    if not line:
+        return
+    typer.echo("")
+    for mech in ("spf", "dkim", "dmarc"):
+        if f"{mech}=pass" in line:
+            typer.secho(f"  {mech.upper():<6} pass", fg=typer.colors.GREEN)
+        elif f"{mech}=fail" in line:
+            typer.secho(f"  {mech.upper():<6} FAIL", fg=typer.colors.RED)
+        elif f"{mech}=" in line:
+            verdict = line.split(f"{mech}=", 1)[1].split()[0]
+            typer.secho(f"  {mech.upper():<6} {verdict}", fg=typer.colors.YELLOW)
+        else:
+            typer.secho(f"  {mech.upper():<6} not reported", fg=typer.colors.YELLOW)
+    typer.echo("  (alignment is judged against the From: domain, not Reply-To)")
 
 
 # ------------------------------------------------------------------ demo

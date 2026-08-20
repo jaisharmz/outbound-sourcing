@@ -93,3 +93,80 @@ def test_mailbox_from_and_reply_to_are_separate(config: Config):
     assert mb.from_.address == "you@sending-domain.com"
     assert mb.reply_to == "you@your-institution.edu"
     assert mb.from_.header() == "Your Name <you@sending-domain.com>"
+
+
+def test_oversized_attachment_set_hard_fails_with_a_breakdown(config_root):
+    """Base64 inflates by 4/3, and many corporate gateways reject above 5-10 MB.
+    An oversized set hard-bounces for reasons unrelated to address quality,
+    which contaminates bounce rate and can trip the circuit breaker falsely."""
+    from pathlib import Path
+    import yaml
+
+    cfg = Config(config_root)
+    root = Path(cfg.campaign.attachments_root)
+    big = root / "_first_email" / "example_document_a.pdf"
+    big.write_bytes(b"x" * 8_000_000)
+
+    with pytest.raises(ConfigError) as exc:
+        Config(config_root)
+    msg = str(exc.value)
+    assert "on the wire" in msg
+    assert "max_attachment_bytes" in msg
+    assert "example_document_a.pdf" in msg
+    assert "%" in msg                      # per-file share
+    assert "dropping example_document_a.pdf leaves" in msg
+
+
+def test_attachment_limit_is_configurable(config_root):
+    from pathlib import Path
+
+    cfg = Config(config_root)
+    (Path(cfg.campaign.attachments_root) / "_first_email" / "example_document_a.pdf"
+     ).write_bytes(b"x" * 8_000_000)
+    path = config_root / "campaign.yaml"
+    path.write_text(path.read_text() + "\nmax_attachment_bytes: 20000000\n")
+    assert Config(config_root).campaign.max_attachment_bytes == 20_000_000
+
+
+def test_wire_size_accounts_for_base64():
+    from scripts.config import wire_size
+    assert wire_size(3) == 4
+    assert wire_size(14_720_000) > 19_000_000
+
+
+def test_placeholder_mailing_address_blocks_a_campaign(config: Config):
+    """CAN-SPAM needs a real address, and the footer ships on every template."""
+    path = config.root / "persona.md"
+    path.write_text(path.read_text().replace("123 Example Street", "[STREET ADDRESS NEEDED]"))
+    reloaded = Config(config.root)
+    blockers = reloaded.preflight("campaign")
+    assert any("STREET ADDRESS NEEDED" in b for b in blockers)
+    assert any("CAN-SPAM" in b for b in blockers)
+
+
+def test_placeholder_does_not_stop_the_config_from_loading(config: Config):
+    """A test send to yourself must still render the placeholder so you see it."""
+    path = config.root / "persona.md"
+    path.write_text(path.read_text().replace("123 Example Street", "[STREET ADDRESS NEEDED]"))
+    Config(config.root)   # must not raise
+
+
+def test_clean_config_has_no_blockers(config: Config):
+    assert config.preflight("campaign") == []
+
+
+def test_enabled_mailbox_with_a_placeholder_from_blocks(config_root):
+    path = config_root / "mailboxes.yaml"
+    text = path.read_text().replace(
+        "      address: you@sending-domain.com", "      address: jai@SENDING-DOMAIN-TBD.com"
+    ).replace("    enabled: false", "    enabled: true")
+    path.write_text(text)
+    blockers = Config(config_root).preflight("campaign")
+    assert any("placeholder" in b for b in blockers)
+
+
+def test_disabled_mailbox_placeholder_does_not_block(config_root):
+    path = config_root / "mailboxes.yaml"
+    path.write_text(path.read_text().replace(
+        "      address: you@sending-domain.com", "      address: jai@SENDING-DOMAIN-TBD.com"))
+    assert Config(config_root).preflight("campaign") == []

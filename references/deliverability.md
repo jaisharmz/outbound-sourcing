@@ -82,6 +82,20 @@ Three PDFs on a first-touch cold email is a strong spam signal and a real part o
 cold campaigns land in Promotions. Total payload matters as much as count — a 14 MB
 first-touch message from an unknown sender is close to the worst available signal.
 
+### Size, not just count
+
+Base64 inflates an attachment by 4/3, and a receiving gateway measures the encoded size.
+Many corporate gateways reject inbound above 10 MB and some above 5 MB. An oversized set
+therefore **hard-bounces for reasons that have nothing to do with address quality**,
+contaminating bounce rate and potentially tripping the circuit breaker on a false signal —
+which halts a campaign that was never actually misaddressed.
+
+`campaign.yaml: max_attachment_bytes` (default 5 MB, wire size) is checked at config load
+and hard-fails with a per-file breakdown. Fix the files rather than raising the limit; a
+single oversized PDF is usually the entire problem.
+
+### Running the A/B
+
 The system supports both and settles the question with data:
 
 - `campaign.yaml: step1_variant: attachments | links`
@@ -95,6 +109,12 @@ The system supports both and settles the question with data:
 
 Run it as a real split, not a switch flipped once, and give it enough volume to say
 something.
+
+**Both arms run in the seed send.** The seed sends are gated on the domains being ready,
+and the landing page lives on the sending domain — so by the time seeds go out, the links
+arm exists too. Spending the first placement measurement on a single variant wastes it:
+the comparison *is* the measurement. Split the seed addresses across both arms and check
+placement for each.
 
 ## The circuit breaker
 

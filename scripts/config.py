@@ -10,6 +10,7 @@ Every model forbids extra keys so a typo fails at load with a suggestion.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from datetime import date, time
@@ -41,6 +42,15 @@ def valid_email(v: str) -> str:
 
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def wire_size(nbytes: int) -> int:
+    """Base64-encoded size. What a receiving gateway actually measures."""
+    return math.ceil(nbytes / 3) * 4
+
+
+def human(nbytes: float) -> str:
+    return f"{nbytes / 1_000_000:.2f} MB"
 
 
 class Strict(BaseModel):
@@ -197,6 +207,12 @@ class Campaign(Strict):
     verification: Verification = Field(default_factory=Verification)
     discovery: Discovery = Field(default_factory=Discovery)
     attachments_root: str
+    # Wire size, not disk size: base64 inflates by 4/3 and that is what a
+    # gateway measures. Many corporate gateways reject inbound above 10 MB and
+    # some above 5 MB, so an oversized attachment set hard-bounces for reasons
+    # that have nothing to do with address quality -- contaminating bounce rate
+    # and potentially tripping the circuit breaker on a false signal.
+    max_attachment_bytes: int = 5_000_000
     # Until a sending domain exists there is nowhere aligned to host the docs,
     # so step 1 ships attachments. The A/B starts at milestone 8.
     step1_variant: Literal["attachments", "links"] = "attachments"
@@ -387,6 +403,10 @@ def _load(model: type[BaseModel], path: Path, data: Any = None) -> Any:
 
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
 
+# A bracketed shout is how this project marks something a human still owes
+# the config: [STREET ADDRESS NEEDED]. Structural, so it cannot be forgotten.
+PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Z0-9 _/-]{3,}\]")
+
 
 def load_persona(path: Path) -> Persona:
     if not path.exists():
@@ -454,11 +474,37 @@ class Config:
                 problems.append(f"sequence.yaml step {step.id!r} -> missing template {tpl}")
 
         root = Path(self.campaign.attachments_root).expanduser()
+        limit = self.campaign.max_attachment_bytes
         for name, aset in self.sequence.attachment_sets.items():
+            sizes: list[tuple[str, int]] = []
             for fname in aset.files:
                 fpath = root / aset.dir / fname
                 if not fpath.exists():
                     problems.append(f"attachment set {name!r} -> missing file {fpath}")
+                else:
+                    sizes.append((fname, fpath.stat().st_size))
+
+            if not sizes:
+                continue
+            total_wire = wire_size(sum(n for _, n in sizes))
+            if total_wire > limit:
+                lines = [
+                    f"attachment set {name!r} is {human(total_wire)} on the wire, over the "
+                    f"{human(limit)} max_attachment_bytes limit. Many corporate gateways "
+                    f"reject inbound above 10 MB and some above 5 MB, so this set would "
+                    f"hard-bounce for reasons unrelated to address quality."
+                ]
+                for fname, nbytes in sorted(sizes, key=lambda x: -x[1]):
+                    share = 100 * nbytes / sum(n for _, n in sizes)
+                    lines.append(
+                        f"      {human(wire_size(nbytes)):>9} wire  {share:5.1f}%  {fname}"
+                    )
+                biggest = max(sizes, key=lambda x: x[1])
+                remainder = wire_size(sum(n for f, n in sizes if f != biggest[0]))
+                lines.append(
+                    f"      dropping {biggest[0]} leaves {human(remainder)}"
+                )
+                problems.append("\n    ".join(lines))
 
         if not self.mailboxes.enabled():
             problems.append("mailboxes.yaml: no mailbox has enabled: true")
@@ -468,6 +514,41 @@ class Config:
                 f"{self.root}: {len(problems)} cross-file problem(s).\n"
                 + "\n".join(f"  {p}" for p in problems)
             )
+
+    def preflight(self, mode: str = "campaign") -> list[str]:
+        """Things that are structurally valid but must not reach a stranger.
+
+        Separate from load-time validation on purpose: a test send to yourself
+        should still render a placeholder so you can see it, while a campaign
+        must refuse to start until a human has filled it in.
+        """
+        blockers: list[str] = []
+
+        for field, value in (
+            ("persona.mailing_address", self.persona.mailing_address),
+            ("persona.unsubscribe_instructions", self.persona.unsubscribe_instructions),
+        ):
+            for hit in PLACEHOLDER_RE.findall(value or ""):
+                blockers.append(
+                    f"{field} still contains the placeholder {hit}. CAN-SPAM requires a "
+                    f"real physical mailing address in every commercial solicitation, and "
+                    f"the footer is appended to every template automatically."
+                )
+        for label, url in self.persona.links.items():
+            if PLACEHOLDER_RE.search(url):
+                blockers.append(f"persona.links[{label!r}] is still a placeholder: {url}")
+
+        for mb in self.mailboxes.enabled():
+            if PLACEHOLDER_RE.search(mb.from_.address) or "TBD" in mb.from_.address.upper():
+                blockers.append(
+                    f"mailbox {mb.id!r} is enabled but its from address is a placeholder: "
+                    f"{mb.from_.address}"
+                )
+
+        if mode == "campaign" and self.campaign.step1_variant == "links" and not self.campaign.links_base_url:
+            blockers.append("step1_variant is 'links' but links_base_url is unset")
+
+        return blockers
 
     def secrets(self) -> dict[str, str]:
         """Read secrets.env if present. Never logged, never committed."""

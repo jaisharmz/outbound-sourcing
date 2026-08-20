@@ -91,6 +91,34 @@ attachment names and sizes, the rendered body, and the compliance footer.
 
 ---
 
+## 5. Authorize a mailbox and send yourself a real email
+
+```bash
+.venv/bin/python -m scripts.outbound auth --mailbox gmail-personal
+.venv/bin/python -m scripts.outbound test-email --mailbox gmail-personal --step step1_initial
+```
+
+`auth` needs `GMAIL_CLIENT_ID` and `GMAIL_CLIENT_SECRET` in `config/secrets.env` — see
+`references/setup.md` for creating the OAuth client. It reports the precise failure mode
+if a Workspace tenant refuses, which matters because a declined consent and an admin
+policy call for completely different responses.
+
+`test-email` renders a fully real email — real template, persona, attachments, CC,
+footer, headers — sends it to `test_recipient`, and prints:
+
+- the resolved CC/BCC and the recipient count the daily cap will charge
+- attachment paths, sizes, and the total **wire** size after base64
+- the outgoing headers
+- the **delivered** headers, when the test recipient is the same account, with SPF, DKIM
+  and DMARC verdicts read off `Authentication-Results` — those exist only on the received
+  copy, never on the sent one
+
+Every test send is recorded in `test_sends` with a template hash. The scheduler refuses to
+send from a mailbox that has never passed one, and refuses to start a campaign whose
+templates changed since.
+
+---
+
 ## Daily commands
 
 ### Render one email exactly as it would send
@@ -221,6 +249,17 @@ so it cannot fail mid-campaign.
 **A candidate file is rejected** — the error names the record and the rule. The common
 ones are evidence without a URL, an email no evidence grounds, and a personalization line
 with no source URL or written as a fragment rather than a sentence.
+
+**`attachment set 'x' is N MB on the wire, over the ... limit`** — base64 inflates by 4/3
+and gateways measure the encoded size. The error prints a per-file breakdown and tells you
+what dropping the largest file would leave. Fix the files; raise `max_attachment_bytes`
+only as a deliberate decision.
+
+**`CAMPAIGN BLOCKERS`** — the config is structurally valid but something in it must not
+reach a stranger, most often a placeholder mailing address. Test sends to yourself still
+work and render the placeholder so you can see exactly what would ship.
+
+**`no usable token`** — run `outbound auth --mailbox <id>`.
 
 **`cannot commit - no transaction is active`** — you are on an old build; migrations now
 run inside the script. Re-pull and re-run `db migrate`.

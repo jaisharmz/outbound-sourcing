@@ -75,6 +75,8 @@ def register(name: str, cls: type[MailboxProvider]) -> None:
 
 
 def build(mailbox: Mailbox, secrets: dict[str, str] | None = None) -> MailboxProvider:
+    if mailbox.provider not in _REGISTRY and mailbox.provider in _LAZY:
+        _LAZY[mailbox.provider]()
     if mailbox.provider not in _REGISTRY:
         raise KeyError(
             f"mailbox {mailbox.id!r} uses provider {mailbox.provider!r}, which is not "
@@ -86,6 +88,19 @@ def build(mailbox: Mailbox, secrets: dict[str, str] | None = None) -> MailboxPro
 from .console import ConsoleMailbox  # noqa: E402  (registers itself)
 
 register("console", ConsoleMailbox)
+
+
+def _load_gmail() -> None:
+    """Imported lazily so console-only use never needs the Google libraries."""
+    if "gmail" in _REGISTRY:
+        return
+    from .gmail import GmailMailbox
+
+    register("gmail", GmailMailbox)
+
+
+_LAZY = {"gmail": _load_gmail}
+
 
 __all__ = [
     "MailboxProvider", "SendResult", "IncomingReply", "ConsoleMailbox",
