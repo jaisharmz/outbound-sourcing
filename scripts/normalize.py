@@ -5,11 +5,18 @@ from __future__ import annotations
 import re
 import unicodedata
 
+# Actual legal suffixes. Safe to remove from a name in email copy: nobody writes
+# "your team at Kepler Systems, Inc." in a sentence.
 LEGAL_SUFFIXES = (
     "inc", "inc.", "llc", "l.l.c.", "ltd", "ltd.", "limited", "corp", "corp.",
     "corporation", "co", "co.", "gmbh", "sa", "s.a.", "bv", "b.v.", "ag", "plc",
-    "pbc", "labs", "lab", "ai", "technologies", "technology", "holdings",
+    "pbc", "holdings",
 )
+
+# Additionally folded away when building a dedupe key, so "Vals AI" and "Vals"
+# match. Never removed for display: "your team at Together" is wrong, and
+# stripping "AI" from an AI company's name is the specific way it goes wrong.
+NORMALIZE_ONLY_SUFFIXES = ("labs", "lab", "ai", "technologies", "technology")
 
 FREE_MAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com",
@@ -27,7 +34,8 @@ def normalize_company(name: str) -> str:
     s = strip_accents(name).lower().strip()
     s = re.sub(r"[^a-z0-9\s\-&]", " ", s)
     tokens = [t for t in s.split() if t]
-    while tokens and tokens[-1] in LEGAL_SUFFIXES and len(tokens) > 1:
+    foldable = LEGAL_SUFFIXES + NORMALIZE_ONLY_SUFFIXES
+    while tokens and tokens[-1] in foldable and len(tokens) > 1:
         tokens.pop()
     return " ".join(tokens)
 

@@ -128,3 +128,17 @@ def test_template_hash_covers_linked_urls(config: Config):
     before = template_hash(config)
     config.sequence.steps[0].links = {"Portfolio": "https://drive.example.test/xyz"}
     assert template_hash(config) != before
+
+
+def test_company_display_keeps_ai_in_the_name(config: Config):
+    """'your team at Together' is wrong. Stripping AI from an AI company's name
+    is the specific way suffix-trimming goes wrong in copy."""
+    from scripts.normalize import display_company, normalize_company
+    assert display_company("Together AI") == "Together AI"
+    assert display_company("Vals AI") == "Vals AI"
+    assert display_company("Backflip AI") == "Backflip AI"
+    # legal suffixes still go, because nobody writes them in a sentence
+    assert display_company("Kepler Systems, Inc.") == "Kepler Systems"
+    assert display_company("Anthropic, PBC") == "Anthropic"
+    # and the dedupe key still folds them, so Vals AI matches Vals
+    assert normalize_company("Vals AI") == normalize_company("Vals")
