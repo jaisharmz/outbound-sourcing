@@ -43,6 +43,13 @@ from . import meter
 PRIORITY = ("person", "homepage", "scholar", "paper", "coauthor", "domain_pattern",
             "title_hunt", "enrichment")
 
+# A pattern is only worth applying to someone it was not learned from when it is
+# both confident and well-sampled. `first` at 55% from 11 addresses describes a
+# domain with no convention, and deriving from it produces plausible-looking
+# addresses that bounce.
+MIN_PATTERN_CONFIDENCE = 0.9
+MIN_PATTERN_SAMPLES = 5
+
 
 @dataclass
 class Fact:
@@ -129,6 +136,17 @@ class Investigation:
         """Has an address and an affiliation. Title is chased but not required."""
         got = self.person_facts(name)
         return "email" in got and "affiliation" in got
+
+    def inferred_only(self, name: str) -> bool:
+        """Address derived from a domain convention, never seen for this person.
+
+        Kept distinct from `complete` because the two are different claims: one
+        says "this address exists", the other says "an address of this shape
+        would exist if the convention holds". Review weighs them differently and
+        so must this.
+        """
+        got = self.person_facts(name)
+        return "email" not in got and "email_inferred" in got
 
     # ------------------------------------------------------------------ log
 
@@ -296,7 +314,8 @@ def step_domain_pattern(inv: Investigation, lead: Lead) -> Step:
     from pathlib import Path as _P
 
     from .config import Config
-    from .github_harvest import Client, harvest_domain, infer_pattern, resolve_org
+    from .github_harvest import (Client, apply_pattern, harvest_domain,
+                                 infer_pattern, resolve_org)
 
     cfg = Config(_P(__file__).resolve().parent.parent / "config")
     c = Client(token=cfg.secrets().get("GITHUB_TOKEN"))
@@ -308,6 +327,8 @@ def step_domain_pattern(inv: Investigation, lead: Lead) -> Step:
         return Step(lead, f"org {org} had no usable addresses", note=res.status)
     pattern, conf, samples = infer_pattern(res.addresses)
     facts, leads = [], []
+    observed_names = {re.sub(r"[^a-z]", "", n.lower())
+                      for n, _ in res.addresses.values()}
     for email, (name, when) in res.addresses.items():
         if len(name.split()) >= 2:
             quote = (f"commit authored by {name} <{email}> in the {org} GitHub "
@@ -323,9 +344,39 @@ def step_domain_pattern(inv: Investigation, lead: Lead) -> Step:
             leads.append(Lead("title_hunt", name, name,
                               f"have an address for {name}, need a role",
                               lead.depth + 1))
+    # Apply the pattern, do not merely report it. Learning that a domain uses
+    # first.last at 100% and then doing nothing with it means the pattern half of
+    # this channel produces a number in a report and no contacts. Everyone on the
+    # company's current roster who has no observed address gets one derived here,
+    # marked inferred so review can weigh it differently.
+    inferred = 0
+    if pattern and conf >= MIN_PATTERN_CONFIDENCE and len(samples) >= MIN_PATTERN_SAMPLES:
+        from .hf_org import current_at
+
+        for member in current_at(inv.company).values():
+            key = re.sub(r"[^a-z]", "", member["name"].lower())
+            if key in observed_names:
+                continue
+            guess = apply_pattern(pattern, member["name"], inv.domain)
+            if not guess:
+                continue
+            inferred += 1
+            facts.append(Fact(
+                "email_inferred", member["name"], guess,
+                f"https://github.com/{org}",
+                f"derived from the {inv.domain} convention {pattern!r}, measured at "
+                f"{conf:.0%} across {len(samples)} observed addresses in the {org} "
+                f"GitHub organisation; {member['name']} is a current member of the "
+                f"company's Hugging Face org"))
+            leads.append(Lead("person", member["name"], member["name"],
+                              f"inferred address for {member['name']}; confirm the role",
+                              lead.depth + 1))
+
+    note = f"org={org}; {len(res.addresses)} observed"
+    if inferred:
+        note += f", {inferred} inferred from the pattern"
     return Step(lead, f"pattern {pattern} at {conf:.0%} from {len(samples)} sample(s)",
-                facts, leads,
-                note=f"org={org}; {len(res.addresses)} observed addresses")
+                facts, leads, note=note)
 
 
 def step_title_hunt(inv: Investigation, lead: Lead) -> Step:
@@ -339,6 +390,36 @@ def step_title_hunt(inv: Investigation, lead: Lead) -> Step:
     from .hf_org import check
 
     ok, why = check(inv.company, lead.subject)
+
+    # No org, or one too thin to testify: fall back to OpenAlex, ranked on
+    # sustained recency rather than its own ordering. That ranking matters --
+    # reading last_known_institutions[0] put people at the wrong employer
+    # entirely, because the list is unordered and a single recent year is
+    # usually a parsing artefact.
+    if ok is None:
+        try:
+            from .openalex import Client, current_affiliation
+
+            from .config import Config as _C
+            from pathlib import Path as _P
+            cfg = _C(_P(__file__).resolve().parent.parent / "config")
+            client = Client(mailto=cfg.campaign.contact_email or None)
+            author = client.find_author(lead.subject, affiliation_hint=inv.company)
+            if author:
+                inst, conf, reason = current_affiliation(author)
+                if inst and conf >= 0.5:
+                    return Step(lead, f"openalex affiliation: {inst} ({conf:.0%})",
+                                [Fact("affiliation", lead.subject, inst, author.url,
+                                      f"OpenAlex affiliations ranked on sustained "
+                                      f"recency: {reason}")],
+                                [Lead("person", lead.subject, lead.subject,
+                                      f"need a title for {lead.subject}",
+                                      lead.depth + 1)],
+                                note=why)
+        except Exception as exc:
+            return Step(lead, f"roster could not answer; openalex fallback failed "
+                              f"({type(exc).__name__})", note=why)
+
     facts = []
     if ok:
         facts.append(Fact("affiliation", lead.subject, inv.company,

@@ -70,12 +70,3 @@ def queueable(conn: sqlite3.Connection) -> int:
     ).fetchone()[0]
 
 
-def exclude_region(conn: sqlite3.Connection, name: str, region: str,
-                   source: str, reason: str) -> None:
-    """Drop for region, visibly. The rule is the default; the cost is on record."""
-    conn.execute(
-        "UPDATE accounts SET status = 'excluded_region', region = ?, region_source = ?,"
-        " excluded_reason = ?, updated_at = ? WHERE name_normalized = ?",
-        (region, source, reason, utcnow(), normalize_company(name)),
-    )
-    log_event(conn, "info", "accounts.exclude_region", company=name, region=region)

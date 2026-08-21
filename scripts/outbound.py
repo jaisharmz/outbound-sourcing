@@ -817,6 +817,73 @@ def candidates_from_pages(
                 "then ingest.", fg=typer.colors.YELLOW)
 
 
+@app.command("merge-accounts")
+def merge_accounts_cmd(
+    acquired: str = typer.Argument(..., help="the company that was acquired"),
+    acquirer: str = typer.Argument(..., help="the company that bought it"),
+    source_url: str = typer.Option(..., "--source", help="the announcement"),
+    reason: str = typer.Option("acquired", "--reason"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Fold an acquired company into its acquirer.
+
+    A target list is a snapshot, and any list long enough contains both sides of
+    a deal. Queueing both means two emails into one company, one addressed to a
+    business unit that no longer trades under that name. The acquired row is
+    kept rather than deleted: its people, evidence and history stay attached and
+    the merge records why.
+    """
+    from . import merge_accounts as MA
+
+    conn = open_db(db)
+    with transaction(conn):
+        result = MA.merge(conn, acquired=acquired, acquirer=acquirer,
+                          reason=reason, source_url=source_url)
+    typer.secho(f"  merged {acquired!r} into {acquirer!r}", fg=typer.colors.GREEN)
+    for k, v in result.items():
+        typer.echo(f"    {k.replace('_', ' ')}: {v}")
+    typer.echo(f"  accounts still queueable: {MA.queueable(conn)}")
+
+
+@app.command("suggest")
+def suggest_cmd(
+    terms: str = typer.Argument(..., help="industry terms, comma-separated"),
+    pick: Optional[str] = typer.Option(None, "--pick",
+                                       help="which to take, e.g. 1,3,5 or 1-4"),
+    limit: int = typer.Option(40, "--limit"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Companies already on hand whose own words match an industry.
+
+    Industry mode's first half. Deciding what belongs to "AI inference" is
+    judgment and stays with the operator; this lays out the candidates already
+    in the database so the decision is made against real descriptions rather
+    than from memory. Descriptions come from each company's own words, never an
+    investor blurb.
+    """
+    from . import suggest as S
+
+    conn = open_db(db)
+    rows = S.from_accounts(conn, [t.strip() for t in terms.split(",") if t.strip()],
+                           limit=limit)
+    if not rows:
+        typer.echo("nothing on hand matches. Import a list first: outbound discover "
+                   "--file companies.txt")
+        return
+    for i, sug in enumerate(rows, 1):
+        typer.echo(f"  [{i:>2}] {sug.name[:30]:<32} {(sug.domain or '')[:26]:<28}"
+                   f"{(sug.description or '')[:60]}")
+    if not pick:
+        typer.echo(f"\n  {len(rows)} candidate(s). Choose with --pick 1,3,5 (or 1-4).")
+        return
+    chosen = S.parse_selection(pick, len(rows))
+    typer.secho(f"\n  {len(chosen)} chosen. Run these:", fg=typer.colors.CYAN)
+    for i in chosen:
+        sug = rows[i - 1]
+        typer.echo(f"    outbound investigate \"{sug.name}\" "
+                   f"--domain {sug.domain or '<domain>'}")
+
+
 @app.command("investigate")
 def investigate_cmd(
     company: str = typer.Argument(...),
@@ -852,6 +919,7 @@ def investigate_cmd(
         typer.echo(f"  {mark} {st.lead.kind:<15} {st.lead.value[:36]:<38} {st.outcome[:40]}")
     people = inv.people()
     done = [n for n in people if inv.complete(n)]
+    guessed = [n for n in people if inv.inferred_only(n)]
     typer.echo(f"\n  {len(inv.facts)} facts, {len(people)} people touched, "
                f"{len(done)} with address + affiliation")
     for n in done:
@@ -859,6 +927,13 @@ def investigate_cmd(
         typer.secho(f"    {n[:24]:<26} {got['email'].value:<34} "
                     f"title={got['title'].value if 'title' in got else 'UNKNOWN'}",
                     fg=typer.colors.GREEN)
+    if guessed:
+        typer.secho(f"\n  {len(guessed)} address(es) inferred from the domain "
+                    f"convention, not observed:", fg=typer.colors.YELLOW)
+        for n in guessed[:12]:
+            typer.echo(f"    {n[:24]:<26} {inv.person_facts(n)['email_inferred'].value}")
+        typer.echo("    These are marked inferred_from_pattern at ingest and flagged "
+                   "at review.")
     typer.echo(f"  stopped: {inv.stopped_because}")
     log = inv.write_log(run_id)
     typer.echo(f"  log: {log}")
@@ -1034,7 +1109,8 @@ def _infer_kind(value: str) -> str:
 @app.command("suppress")
 def suppress_add(
     value: str = typer.Argument(..., help="Address, domain, or company."),
-    kind: Optional[str] = typer.Option(None, "--kind", help="email | domain | company"),
+    kind: Optional[str] = typer.Option(None, "--kind",
+                                       help="email | domain | company | lab"),
     reason: str = typer.Option("asked to stop", "--reason"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
@@ -1054,6 +1130,13 @@ def suppress_add(
         if kind == "company":
             suppression.suppress_company(conn, value, reason,
                                          csv_path=cfg.root / "suppression.csv")
+        elif kind == "lab":
+            # A reply from one member of a research group stops the whole group.
+            # Company-level suppression misses this: four people from one
+            # university lab are colleagues who talk to each other, and the loop
+            # surfaces them together.
+            suppression.suppress_lab(conn, value, reason,
+                                     csv_path=cfg.root / "suppression.csv")
     typer.secho(f"{'suppressed' if added else 'already suppressed'}: {kind} {value}",
                 fg=typer.colors.GREEN)
 

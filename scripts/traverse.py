@@ -19,12 +19,6 @@ from .db import utcnow
 from .openalex import Client, Work, coauthor_counts
 
 
-def plan_path(run_id: str) -> Path:
-    p = Path(__file__).resolve().parent.parent / "state" / "graph"
-    p.mkdir(parents=True, exist_ok=True)
-    return p / f"plan_{run_id}.md"
-
-
 @dataclass
 class Expansion:
     node_id: int
@@ -32,88 +26,6 @@ class Expansion:
     added_people: int = 0
     added_edges: int = 0
     coauthors: dict = field(default_factory=dict)
-
-
-def seed_person(conn: sqlite3.Connection, client: Client, name: str, run_id: str, *,
-                affiliation_hint: str | None = None) -> tuple[int, dict] | None:
-    a = client.find_author(name, affiliation_hint=affiliation_hint)
-    if not a:
-        return None
-    nid = G.upsert_node(conn, "person", a.name, external={"openalex": a.short_id},
-                        attrs={"works": a.works_count, "cited": a.cited_by_count,
-                               "topics": a.topics,
-                               "institution": a.last_known_institution},
-                        run_id=run_id)
-    G.record_path(conn, nid, run_id, seed_node_id=None, hops=0, via="seed")
-    resolve_affiliation(conn, client, nid, a, run_id)
-    return nid, {"author": a}
-
-
-# Company aliases, because the string an author types is not the company's
-# trade name. Anything not listed falls back to the name itself.
-COMPANY_PATTERNS = {
-    "together ai": r"together\s*ai|together\.ai|togethercomputer",
-    "fireworks ai": r"fireworks\s*ai|fireworks\.ai",
-    "baseten": r"baseten",
-    "groq": r"\bgroq\b",
-    "etched": r"\betched\b",
-    "cursor": r"\bcursor\b|\banysphere\b",
-    "sambanova": r"sambanova",
-    "cerebras": r"cerebras",
-    "modular": r"\bmodular\s*(?:inc|ai)?\b",
-    "neural magic": r"neural\s*magic",
-    "perplexity ai": r"perplexity\s*ai|perplexity\.ai",
-    "mistral ai": r"mistral\s*ai|mistral\.ai",
-    "hugging face": r"hugging\s*face|huggingface",
-    "d-matrix": r"d-?matrix",
-    "tenstorrent": r"tenstorrent",
-    "furiosaai": r"furiosa",
-    "lightning ai": r"lightning\s*ai|grid\.ai",
-    "predibase": r"predibase",
-    "replicate": r"\breplicate,?\s*inc\b|replicate\.com",
-    "modal labs": r"modal\s*labs|modal\.com",
-    "rain ai": r"\brain\s*ai\b|rain\.ai",
-    "positron ai": r"positron\s*ai",
-    "recogni": r"recogni",
-    "lambda labs": r"lambda\s*labs",
-    "nebius": r"nebius",
-}
-
-# Different companies that share a name. "Cursor Insight Ltd." is a London
-# handwriting-analytics firm with a real, current, correctly-formatted
-# affiliation line -- it passed the founding-year and prose guards cleanly and
-# produced eight confident false positives. No heuristic separates it from
-# Anysphere's Cursor; only knowing they are different companies does.
-EXCLUDE_PATTERNS = {
-    "cursor": r"cursor\s+insight",
-    # "Modular" and "Rain" are ordinary words; "Lambda" is a Greek letter used
-    # everywhere in physics. Restrict to the company forms.
-    "modular": r"modular\s+(?:arithmetic|form|design|robot|construction|building)",
-    "rain ai": r"rainfall|precipitation|rain\s+gauge|rain\s+forest",
-    "lambda labs": r"lambda\s+(?:calculus|expression|function|cdm|cold)",
-}
-
-# Founding years. A company cannot have employed anyone before it existed, and
-# this is the cheapest guard against a name that is also an ordinary English
-# word: "Etched" matched the verb in semiconductor abstracts back to 1991, and
-# "Cursor" matched an unrelated Chilean "Cursor Ltd." and Spanish ecology prose.
-FOUNDED = {
-    "together ai": 2022, "fireworks ai": 2022, "baseten": 2019,
-    "groq": 2016, "etched": 2022, "cursor": 2022,
-    "sambanova": 2017, "cerebras": 2016, "modular": 2022, "neural magic": 2018,
-    "perplexity ai": 2022, "mistral ai": 2023, "hugging face": 2016,
-    "d-matrix": 2019, "tenstorrent": 2016, "furiosaai": 2017,
-    "lightning ai": 2019, "predibase": 2021, "replicate": 2019,
-    "modal labs": 2021, "rain ai": 2017, "positron ai": 2023,
-    "recogni": 2017, "lambda labs": 2012, "nebius": 2024,
-}
-
-# Prose tells. A real affiliation string is a short comma-delimited address
-# ("Groq, Inc, Palo Alto, CA, USA"); a biography is a sentence. If the segment
-# carrying the match reads like a sentence, the match is a word in prose rather
-# than an employer.
-PROSE_TELLS = (" is ", " was ", " received ", " graduated ", " served ",
-               " joined ", " prior to ", " degree ", " his ", " her ", " they ")
 
 
 def plausible_affiliation(raw: str, pattern: str) -> bool:
@@ -264,32 +176,6 @@ def expand(conn: sqlite3.Connection, client: Client, node_id: int, run_id: str, 
 # ------------------------------------------------------ affiliation
 
 
-def resolve_affiliation(conn: sqlite3.Connection, client: Client, node_id: int,
-                        author, run_id: str) -> tuple[str | None, float, str]:
-    """Place a person at an organization, with a confidence and a reason.
-
-    Ranked on sustained recency from OpenAlex `affiliations`, never on
-    `last_known_institutions[0]`. Anything below 0.5 is stored as evidence with
-    its doubt attached rather than asserted as fact.
-    """
-    from .openalex import current_affiliation
-
-    inst, conf, why = current_affiliation(author)
-    if not inst:
-        return None, 0.0, why
-    oid = G.upsert_node(conn, "organization", inst, run_id=run_id)
-    G.add_edge(conn, node_id, oid, "works_at", source_url=author.url, is_current=True,
-               quote=f"OpenAlex affiliations, ranked on sustained recency: {why}")
-    attrs = json.loads(conn.execute("SELECT attrs FROM graph_nodes WHERE id=?",
-                                    (node_id,)).fetchone()["attrs"] or "{}")
-    attrs.update({"institution": inst, "affiliation_confidence": conf,
-                  "affiliation_reason": why,
-                  "conflation_risk": author.works_count > 150})
-    conn.execute("UPDATE graph_nodes SET attrs = ?, updated_at = ? WHERE id = ?",
-                 (json.dumps(attrs), utcnow(), node_id))
-    return inst, conf, why
-
-
 def rank(conn: sqlite3.Connection, run_id: str, *, topic_terms: list[str],
          limit: int = 20) -> list[dict]:
     """Rank candidates before spending an affiliation lookup on any of them.
@@ -327,53 +213,3 @@ def rank(conn: sqlite3.Connection, run_id: str, *, topic_terms: list[str],
 # ------------------------------------------------------------------ map
 
 
-def render_map(conn: sqlite3.Connection, run_id: str) -> str:
-    """A readable account of the graph this run built."""
-    lines = [f"# Graph map — run `{run_id}`", ""]
-
-    seeds = conn.execute("""SELECT n.id, n.display_name FROM graph_paths p
-                            JOIN graph_nodes n ON n.id = p.node_id
-                            WHERE p.run_id = ? AND p.hops = 0""", (run_id,)).fetchall()
-    lines.append("## Seeds")
-    lines.append("")
-    for s in seeds:
-        lines.append(f"- **{s['display_name']}**")
-    lines.append("")
-
-    lines.append("## Expansion decisions")
-    lines.append("")
-    for e in conn.execute("""SELECT e.decision, e.reason, e.yielded, n.display_name
-                             FROM graph_expansions e
-                             LEFT JOIN graph_nodes n ON n.id = e.node_id
-                             WHERE e.run_id = ? ORDER BY e.id""", (run_id,)):
-        mark = "expanded" if e["decision"] == "expanded" else "skipped "
-        who = e["display_name"] or "(run)"
-        lines.append(f"- `{mark}` **{who}** — {e['reason']}"
-                     + (f" _(+{e['yielded']} people)_" if e["yielded"] else ""))
-    lines.append("")
-
-    lines.append("## Where each person sits")
-    lines.append("")
-    rows = conn.execute("""
-        SELECT n.id, n.display_name, n.attrs, MIN(p.hops) hops,
-               COUNT(DISTINCT COALESCE(p.seed_node_id,0) || '|' || p.via) routes
-          FROM graph_paths p JOIN graph_nodes n ON n.id = p.node_id
-         WHERE p.run_id = ? AND n.kind = 'person'
-         GROUP BY n.id ORDER BY hops, routes DESC, n.display_name""", (run_id,)).fetchall()
-    for r in rows:
-        a = json.loads(r["attrs"] or "{}")
-        inst = a.get("institution") or "affiliation unknown"
-        extra = []
-        if a.get("papers_with_source"):
-            extra.append(f"{a['papers_with_source']} shared paper(s)")
-        if a.get("latest_year"):
-            extra.append(f"latest {a['latest_year']}")
-        if r["routes"] > 1:
-            extra.append(f"{r['routes']} routes")
-        lines.append(f"- {'·' * r['hops']} **{r['display_name']}** — {inst}"
-                     + (f"  ({', '.join(extra)})" if extra else ""))
-    lines.append("")
-    lines.append(f"_{len(rows)} people, "
-                 f"{conn.execute('SELECT COUNT(*) FROM graph_edges').fetchone()[0]} edges "
-                 f"in the graph overall._")
-    return "\n".join(lines)

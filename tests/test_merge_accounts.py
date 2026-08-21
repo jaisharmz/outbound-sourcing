@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from scripts.db import utcnow
-from scripts.merge_accounts import MergeError, exclude_region, merge, queueable
+from scripts.merge_accounts import MergeError, merge, queueable
 
 
 def account(conn, name, status="new"):
@@ -80,28 +80,3 @@ def test_merge_refuses_unknown_or_self(conn):
 # ---------------------------------------------------------------- regions
 
 
-def test_region_exclusion_is_visible_not_silent(conn):
-    """The GDPR rule holds by default, but the cost is on record: Mistral is
-    exactly the kind of target the operator would otherwise want."""
-    account(conn, "Paris Co")
-    exclude_region(conn, "Paris Co", "EU", "https://example.test/about", "EU-based")
-    row = conn.execute("SELECT status, region, region_source, excluded_reason"
-                       " FROM accounts").fetchone()
-    assert row["status"] == "excluded_region"
-    assert row["region"] == "EU"
-    assert row["region_source"].startswith("https://")
-    assert "EU-based" in row["excluded_reason"]
-
-
-def test_a_region_excluded_account_is_not_queueable(conn):
-    account(conn, "Paris Co")
-    exclude_region(conn, "Paris Co", "EU", "src", "EU-based")
-    assert queueable(conn) == 0
-
-
-def test_region_exclusion_is_distinguishable_from_other_exclusions(conn):
-    account(conn, "Paris Co")
-    account(conn, "Off Topic", status="excluded")
-    exclude_region(conn, "Paris Co", "EU", "src", "EU-based")
-    kinds = {r["status"] for r in conn.execute("SELECT status FROM accounts")}
-    assert kinds == {"excluded_region", "excluded"}

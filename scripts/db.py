@@ -22,15 +22,6 @@ def default_db_path() -> Path:
     return Path(__file__).resolve().parent.parent / "state" / "prospects.db"
 
 
-def scratch_db_path(name: str) -> Path:
-    """A named database that is deliberately not production.
-
-    Pipeline validation and demos write here. Campaign inventory and a run used
-    to exercise the machinery should not share a table.
-    """
-    return Path(__file__).resolve().parent.parent / "state" / f"{name}.db"
-
-
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -191,11 +182,6 @@ def log_event(conn: sqlite3.Connection, level: str, event: str, **payload: Any) 
 def one(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> sqlite3.Row | None:
     cur = conn.execute(sql, params)
     return cur.fetchone()
-
-
-def scalar(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> Any:
-    row = one(conn, sql, params)
-    return row[0] if row else None
 
 
 def get_or_create_campaign(conn: sqlite3.Connection, name: str) -> int:

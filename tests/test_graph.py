@@ -127,11 +127,3 @@ def test_a_name_only_node_is_adopted_when_an_id_arrives(conn):
                         ).fetchone()[0] == 1
 
 
-def test_two_ids_for_one_name_are_surfaced_not_merged(conn):
-    """OpenAlex splits some people and conflates others; collapsing on name
-    alone would invent an identity."""
-    G.upsert_node(conn, "person", "Albert Gu", external={"openalex": "A1"})
-    G.upsert_node(conn, "person", "Albert G. Gu", external={"openalex": "A2"})
-    cands = G.merge_candidates(conn)
-    assert cands == [("albert gu", ["Albert Gu", "Albert G. Gu"])]
-    assert conn.execute("SELECT COUNT(*) FROM graph_nodes").fetchone()[0] == 2

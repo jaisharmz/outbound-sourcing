@@ -103,20 +103,6 @@ def record_path(conn: sqlite3.Connection, node_id: int, run_id: str, *,
         (node_id, run_id, seed_node_id, hops, via, utcnow()))
 
 
-def merge_candidates(conn: sqlite3.Connection) -> list[tuple[str, list[str]]]:
-    """People sharing a normalized name under different external ids.
-
-    Surfaced rather than merged: OpenAlex genuinely splits some people and
-    genuinely conflates others, and collapsing on name alone would invent an
-    identity. A real run produced Albert Gu / Albert G. Gu, Daniel Fu /
-    Daniel Y. Fu, and Ce Zhang twice.
-    """
-    seen: dict[str, list[str]] = {}
-    for r in conn.execute("SELECT display_name FROM graph_nodes WHERE kind = 'person'"):
-        seen.setdefault(normalize_person(r["display_name"]), []).append(r["display_name"])
-    return [(k, v) for k, v in sorted(seen.items()) if len(v) > 1]
-
-
 def path_count(conn: sqlite3.Connection, node_id: int) -> int:
     """Independent routes to a node. Three routes means more central than one."""
     return conn.execute(
@@ -158,17 +144,6 @@ SENIORITY_BAND = {
 }
 
 HUB_DEGREE = 60          # beyond this a node is a hub, not a lead
-
-
-def topic_overlap(candidate_topics: list[str], seed_topics: list[str]) -> float:
-    """Share of the seed's research area, measured against the seed rather than a
-    hand-written term list. Returns 0.5 when either side has no topics, so an
-    absent signal reads as neutral instead of as a negative."""
-    a = {t.strip().lower() for t in (candidate_topics or []) if t}
-    b = {t.strip().lower() for t in (seed_topics or []) if t}
-    if not a or not b:
-        return 0.5
-    return len(a & b) / len(b)
 
 
 def score_node(conn: sqlite3.Connection, node_id: int, *, hops: int,

@@ -105,3 +105,70 @@ def test_enrichment_is_a_seam_not_an_implementation():
     step = I.step_enrichment(I.Investigation("C", "c.com"),
                              I.Lead("enrichment", "A B", "A B"))
     assert "no paid provider configured" in step.outcome
+
+
+def test_a_learned_pattern_is_applied_not_just_reported(monkeypatch):
+    """infer_pattern measured first.last at 100% across a dozen addresses and
+    nothing ever used it. The pattern half of the GitHub channel produced a
+    number in a report and no contacts."""
+    from scripts import investigate as I
+
+    inv = I.Investigation("Acme", "acme.test")
+    monkeypatch.setattr("scripts.hf_org.current_at", lambda c: {
+        "ada lovelace": {"name": "Ada Lovelace", "user": "ada"},
+        "alan turing": {"name": "Alan Turing", "user": "alan"},
+    })
+
+    class Res:
+        addresses = {"alan.turing@acme.test": ("Alan Turing", "2026-08-01T00:00:00")}
+        status = "ok"
+
+    monkeypatch.setattr("scripts.github_harvest.resolve_org", lambda c, n, d: ("acme", ""))
+    monkeypatch.setattr("scripts.github_harvest.harvest_domain",
+                        lambda c, n, d, repos=4: Res())
+    monkeypatch.setattr("scripts.github_harvest.infer_pattern",
+                        lambda a: ("first.last", 1.0, ["x"] * 8))
+    monkeypatch.setattr("scripts.config.Config.secrets", lambda self: {})
+
+    step = I.step_domain_pattern(inv, I.Lead("domain_pattern", "acme.test"))
+    inferred = [f for f in step.facts if f.kind == "email_inferred"]
+    assert [f.value for f in inferred] == ["ada.lovelace@acme.test"]
+    # Alan was observed, so he is not re-derived.
+    assert all(f.subject != "Alan Turing" for f in inferred)
+    assert "measured at 100%" in inferred[0].quote
+
+
+def test_a_weak_pattern_is_not_applied(monkeypatch):
+    """`first` at 55% describes a domain with no convention. Deriving from it
+    produces plausible-looking addresses that bounce."""
+    from scripts import investigate as I
+
+    inv = I.Investigation("Acme", "acme.test")
+    monkeypatch.setattr("scripts.hf_org.current_at", lambda c: {
+        "ada lovelace": {"name": "Ada Lovelace", "user": "ada"}})
+
+    class Res:
+        addresses = {"alan@acme.test": ("Alan Turing", "2026-08-01T00:00:00")}
+        status = "ok"
+
+    monkeypatch.setattr("scripts.github_harvest.resolve_org", lambda c, n, d: ("acme", ""))
+    monkeypatch.setattr("scripts.github_harvest.harvest_domain",
+                        lambda c, n, d, repos=4: Res())
+    monkeypatch.setattr("scripts.github_harvest.infer_pattern",
+                        lambda a: ("first", 0.55, ["x"] * 11))
+    monkeypatch.setattr("scripts.config.Config.secrets", lambda self: {})
+
+    step = I.step_domain_pattern(inv, I.Lead("domain_pattern", "acme.test"))
+    assert not [f for f in step.facts if f.kind == "email_inferred"]
+
+
+def test_an_inferred_address_is_not_a_complete_contact():
+    """'This address exists' and 'an address of this shape would exist if the
+    convention holds' are different claims."""
+    from scripts import investigate as I
+
+    inv = I.Investigation("Acme", "acme.test")
+    inv.facts.append(I.Fact("email_inferred", "Ada", "a.l@acme.test", "u", "q"))
+    inv.facts.append(I.Fact("affiliation", "Ada", "Acme", "u", "q"))
+    assert not inv.complete("Ada")
+    assert inv.inferred_only("Ada")

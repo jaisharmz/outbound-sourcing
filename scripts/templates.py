@@ -208,10 +208,6 @@ def resolve_documents(config: Config, step: Step) -> tuple[list[Attachment], lis
     return attachments, links
 
 
-def attachments_for(config: Config, step: Step) -> list[Attachment]:
-    return resolve_documents(config, step)[0]
-
-
 def build_context(
     *,
     persona: Persona,
