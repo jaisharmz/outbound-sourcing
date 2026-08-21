@@ -32,6 +32,13 @@ import urllib.request
 from . import meter
 
 API = "https://huggingface.co/api"
+
+# Below this many members, a *negative* result means nothing. Mistral AI's org
+# lists 13 people against a company of hundreds, so "not on the roster" there is
+# a statement about the org's coverage, not about the person -- it marked all
+# five Mistral candidates as departed. Positives stay trustworthy at any size:
+# being listed is evidence regardless of how many others are.
+MIN_ROSTER_FOR_NEGATIVES = 50
 UA = {"User-Agent": "outbound-sourcing/1.0 (mailto:jaisharmaus@gmail.com)"}
 
 # Company -> HF org slug. The slug is rarely the company name.
@@ -91,5 +98,9 @@ def check(company: str, name: str) -> tuple[bool | None, str]:
     if hit:
         return True, (f"listed as a current member of the {slug!r} Hugging Face org "
                       f"as @{hit['user']}")
+    if len(roster) < MIN_ROSTER_FOR_NEGATIVES:
+        return None, (f"the {slug!r} org lists only {len(roster)} members, too few to "
+                      f"cover the company, so absence from it says nothing about this "
+                      f"person")
     return False, (f"not in the {slug!r} Hugging Face org member list ({len(roster)} "
                    f"members), so the affiliation is likely out of date")

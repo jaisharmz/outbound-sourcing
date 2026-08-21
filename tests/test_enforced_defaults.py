@@ -192,7 +192,30 @@ def test_a_departed_employee_fails_the_check(monkeypatch):
     """9 of 15 Hugging Face addresses belonged to people who had left."""
     from scripts import hf_org
 
+    # The roster must be thick enough for absence to mean anything -- see
+    # test_a_thin_roster_cannot_prove_absence.
+    # Distinct alphabetic names: name_key strips digits, so "Person 1" and
+    # "Person 2" collapse to one key and the roster looks like a single member.
+    names = [f"{a}{b}orp {a}{b}ane" for a in "abcdefghij" for b in "klmnopqr"]
     monkeypatch.setattr(hf_org, "members", lambda slug: [
-        {"name": "Still Here", "user": "sh", "key": hf_org.name_key("Still Here")}])
+        {"name": n, "user": n.replace(" ", ""), "key": hf_org.name_key(n)}
+        for n in names])
     ok, why = hf_org.check("Hugging Face", "Douwe Kiela")
     assert ok is False and "out of date" in why
+
+
+def test_a_thin_roster_cannot_prove_absence(monkeypatch):
+    """Mistral AI's org lists 13 people against a company of hundreds. Reading
+    absence from it as departure marked all five Mistral candidates as gone."""
+    from scripts import hf_org
+
+    monkeypatch.setattr(hf_org, "members",
+                        lambda slug: [{"name": f"P{i}", "user": f"p{i}",
+                                       "key": hf_org.name_key(f"P{i}")}
+                                      for i in range(12)])
+    ok, why = hf_org.check("Mistral AI", "Saurabh Garg")
+    assert ok is None and "too few to cover" in why
+
+    # A positive is trustworthy at any roster size.
+    ok, _ = hf_org.check("Mistral AI", "P3")
+    assert ok is True
