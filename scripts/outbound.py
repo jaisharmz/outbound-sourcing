@@ -808,6 +808,46 @@ def _summarize_auth(headers: str) -> None:
     typer.echo("  (alignment is judged against the From: domain, not Reply-To)")
 
 
+review_app = typer.Typer(add_completion=False, help="The human review gate.")
+app.add_typer(review_app, name="review")
+
+
+@review_app.command("export")
+def review_export(
+    out: str = typer.Option("review.md", "--out"),
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Write the review packet: a markdown brief plus a CSV to mark up."""
+    from . import review as R
+    from pathlib import Path as _P
+
+    conn = open_db(db)
+    n, flagged = R.export(conn, _config(config), _P(out), campaign)
+    csv_path = _P(out).with_suffix(".csv")
+    typer.echo(f"exported {n} contact(s), {flagged} flagged")
+    typer.echo(f"  brief:  {out}")
+    typer.echo(f"  decide: {csv_path}   (set approved to y or n, then: "
+               f"outbound review import --file {csv_path})")
+
+
+@review_app.command("import")
+def review_import(
+    file: str = typer.Option(..., "--file"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Load review decisions back in. Nothing sends until this has run."""
+    from . import review as R
+    from pathlib import Path as _P
+
+    conn = open_db(db)
+    with transaction(conn):
+        counts = R.import_decisions(conn, _P(file))
+    typer.echo(f"approved {counts['approved']}, rejected {counts['rejected']}, "
+               f"skipped {counts['skipped']}")
+
+
 @app.command("check-links")
 def check_links_cmd(
     campaign: Optional[str] = typer.Option(None, "--campaign"),
