@@ -35,7 +35,7 @@ it belongs in config.
 >
 > **Sources that work**, because they give you a name and a real email in the same
 > document: arXiv PDFs (author emails in the header), Semantic Scholar / OpenAlex,
-> GitHub public commit emails, personal academic sites and CVs, company `/team`,
+> personal academic sites and CVs, company `/team`,
 > `/research`, `/about`, `/people` pages.
 >
 > **LinkedIn: search-result snippets only.** Read names and titles off the SERP. Do not
@@ -66,6 +66,12 @@ it belongs in config.
 > explaining what you looked at. Never pad.
 
 ## Harvesting addresses from public commits
+
+**Scope note.** GitHub is a pattern source, not a people source. Harvesting commit
+addresses to find *who* to contact was tried and abandoned: a commit proves an address
+existed when the commit landed, not that the person is still there or who they are. The
+channel that replaced it is personal and lab pages, which carry name, title, research
+area and often an address in one first-party document — see `scripts/person_pages.py`.
 
 `outbound harvest-github` is the deterministic half of pattern inference. It resolves a
 company's GitHub org, reads author emails off recent public commits, and infers the

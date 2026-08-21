@@ -127,6 +127,15 @@ def migrate(conn: sqlite3.Connection, verbose: bool = False) -> list[str]:
 
 
 def open_db(path: Path | str | None = None) -> sqlite3.Connection:
+    """Open the database. OUTBOUND_DB redirects every command at once.
+
+    Passing --db to each command in a test run is a step that can be forgotten
+    halfway through, and the failure is silent: the run works and quietly writes
+    into the production queue. One environment variable is harder to half-apply.
+    """
+    import os
+
+    path = path or os.environ.get("OUTBOUND_DB") or None
     conn = connect(path)
     migrate(conn)
     return conn

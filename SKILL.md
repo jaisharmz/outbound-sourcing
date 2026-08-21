@@ -22,6 +22,33 @@ send itself, retries, state transitions, suppression, and bounce tracking.
 The send path contains zero model calls. `tests/test_send_path_purity.py` enforces that
 by walking the import graph — it is checked, not promised.
 
+## Start here: `/outbound`
+
+`/outbound <company | person | --industry "<topic>">` runs the whole investigation
+from nothing and stops at the review gate. It is the primary entry point, and the
+sections below are the mechanism it drives rather than a separate procedure. The
+command lives in `.claude/commands/outbound.md`; read it for the current step
+order, and prefer it to assembling the steps by hand.
+
+Measured cost, 2026-08-21, both from an empty database: Together AI took 5.2 min
+(2 searches, 247 fetches, 1 API call) and produced 39 entry points and 7
+addresses. Baseten took 1.5 min and correctly produced nothing.
+
+### Status of the older paths
+
+They still work and are still reachable; they are no longer the default route,
+and two are narrower than this document originally described.
+
+| path | status |
+| --- | --- |
+| `/outbound` on one company | **current.** The default. |
+| `outbound discover --mode vc` (fund rosters) | **superseded as the entry point.** Still the way to load a bulk list, but sourcing no longer starts from a fund portfolio. |
+| `outbound discover --mode industry` | **occasional.** Costs 20–60 min and most of a session's search budget. |
+| per-company research subagents (§2) | **superseded** by `/outbound`, which does the same work in one invocation and reports its cost. |
+| GitHub commit-email harvesting | **narrowed to domain-pattern learning only.** A commit address is an address without an identity. Do not source people from it. |
+| volume infrastructure (mailbox pool, warmup, daemon, per-recipient windows, links-vs-attachments A/B, bounce circuit breaker) | **removed.** Deleted, not dormant. The target is 15–25/day from one mailbox, sent by hand. |
+| CAN-SPAM footer and mailing address | **removed by decision.** See `references/compliance.md`. |
+
 ## The contract
 
 Agentic discovery writes **only** to `state/candidates/<company>.json`.
@@ -129,6 +156,12 @@ so a campaign only overrides the copy it actually changes. **A template still co
 bracketed placeholder blocks its campaign** — an unwritten email must not be sendable.
 
 ### 2. People — the agentic loop
+> **Superseded by `/outbound`.** This section describes the older per-company
+> subagent fan-out. The judgment it describes is still correct and worth reading;
+> the orchestration is not how a run is started now. `/outbound` performs these
+> steps in one invocation against `outbound company-resolve`,
+> `outbound traverse-company` and `outbound person-pages`, and reports what it
+> cost. Use the subagent loop only for a bulk sweep across many companies.
 
 For each company, spawn a subagent with a research brief and a tool budget (default 15,
 from `campaign.yaml`). Run companies in parallel batches. **The brief is generated from
@@ -142,8 +175,12 @@ pad.
 
 Sources that give you a name and a real email **in the same document**, which is what
 makes pattern inference work: arXiv PDFs (emails in the header), Semantic Scholar /
-OpenAlex, GitHub public commit emails, personal academic sites, and company `/team`,
-`/research`, `/about` pages.
+OpenAlex, personal academic sites, and company `/team`, `/research`, `/about` pages.
+
+**GitHub commit emails are no longer a people source.** They give an address with
+no identity attached and no evidence the person still works there. GitHub is kept
+for one job only: learning a domain's email pattern, via
+`outbound harvest-github`. Never create a contact from a commit address.
 
 `config/dorks.yaml` holds search *seeds*, not a script. Improvise beyond them.
 

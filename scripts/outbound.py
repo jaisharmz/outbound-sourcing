@@ -548,7 +548,9 @@ app.add_typer(run_app, name="run")
 
 @run_app.command("start")
 def run_start(target: str = typer.Argument(...),
-              kind: str = typer.Option("company", "--kind")):
+              kind: str = typer.Option("company", "--kind"),
+              scratch: bool = typer.Option(False, "--scratch",
+                                           help="print an OUTBOUND_DB for a test run")):
     """Open a run file. Export OUTBOUND_RUN_ID so later steps accumulate into it."""
     from . import meter
     import re as _re, time as _time
@@ -556,6 +558,10 @@ def run_start(target: str = typer.Argument(...),
     slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")
     run_id = f"{slug}-{int(_time.time())}"
     meter.start(run_id, target, kind)
+    if scratch:
+        scratch_db = meter.runs_dir() / f"{run_id}.db"
+        typer.echo(f"{run_id}\nOUTBOUND_DB={scratch_db}", err=False)
+        return
     typer.echo(run_id)
 
 
@@ -657,6 +663,19 @@ def company_resolve(
     campaign = campaign or (cfg.campaigns.for_tier(tier) if tier else None)
     if campaign:
         cfg.campaigns.get(campaign)          # raises on an unknown name
+    if not campaign:
+        # Refuse before writing. Creating the row and then refusing leaves an
+        # unroutable account behind, which is the state this check exists to
+        # prevent -- and the next run would find it and treat it as known.
+        meter.flush(label="company-resolve")
+        typer.secho(
+            f"\n  REFUSING to register {name!r} with no campaign. Its contacts would "
+            f"ingest cleanly and then be unroutable -- absent from every campaign review "
+            f"export and unable to send, with nothing reporting an error.\n"
+            f"  Re-run with --tier <tier> or --campaign <name>. Depth routes: "
+            f"{cfg.campaigns.depth_routes() or '(see campaigns.yaml)'}",
+            fg=typer.colors.RED)
+        raise typer.Exit(3)
     with transaction(conn):
         if row:
             conn.execute("UPDATE accounts SET domain=COALESCE(?, domain),"
@@ -672,28 +691,26 @@ def company_resolve(
                 (name, registrable_domain(name.lower()) or name.lower(), domain,
                  "outbound-run", tier, campaign, ai_depth, utcnow(), utcnow()))
             aid = cur.lastrowid
-    if campaign:
-        typer.echo(f"  routed: account {aid} -> tier={tier} campaign={campaign} "
-                   f"ai_depth={ai_depth or '(unset)'}")
-    else:
-        typer.secho(f"  account {aid} has NO campaign. Its contacts will ingest and then "
-                    f"be unroutable -- they will not appear in a campaign review export "
-                    f"and cannot send. Pass --tier or --campaign.", fg=typer.colors.RED)
     meter.flush(label="company-resolve")
+    typer.echo(f"  routed: account {aid} -> tier={tier} campaign={campaign} "
+               f"ai_depth={ai_depth or '(unset)'}")
 
 
 @app.command("person-pages")
 def person_pages_cmd(
     names: list[str] = typer.Argument(...),
     url: Optional[str] = typer.Option(None, "--url", help="try this URL first"),
-    company: Optional[str] = typer.Option(None, "--company",
-                                          help="require the page to mention this"),
+    company: str = typer.Option(..., "--company",
+                                help="the page must mention this; required"),
     json_out: Optional[str] = typer.Option(None, "--json"),
 ):
     """Probe personal pages for addresses. Observed only -- never a guess.
 
-    Step 4's first pass. Every address printed was read off a page, and the
-    page it came from is printed next to it.
+    --company is required, not optional. Without it a guessed URL that lands on
+    a namesake looks like a clean hit: probing "Pankaj Gupta" for Baseten found
+    a real page belonging to a different Pankaj Gupta and read a stranger's
+    address off it, with every other check green. Making the corroboration
+    opt-in would mean remembering to opt in, and this failed silently once.
     """
     from . import meter
     from .person_pages import find
@@ -715,6 +732,19 @@ def person_pages_cmd(
     typer.echo(f"\n  {len(results)} probed: {found} with an address, "
                f"{pages} page but no address, "
                f"{len(results) - found - pages - risky} no page found")
+    # How much search recovered over guessing. Reported per run rather than
+    # asserted once, because the answer depends on how conventional the
+    # population's handles are and that is not stable across companies.
+    by_source: dict[str, int] = {}
+    for r in results:
+        if r.status in ("found", "namesake_risk", "no_email") and r.source:
+            by_source[r.source] = by_source.get(r.source, 0) + 1
+    if by_source:
+        typer.echo("  pages reached by source: " + ", ".join(
+            f"{n} {k}" for k, n in sorted(by_source.items(), key=lambda kv: -kv[1])))
+        recovered = sum(n for k, n in by_source.items() if k != "guess")
+        typer.echo(f"    {recovered} of {sum(by_source.values())} would have been missed "
+                   f"by URL guessing alone")
     if risky:
         typer.secho(f"  {risky} address(es) found on a page that never mentions "
                     f"{company!r}. Treated as a namesake, not a contact. Confirm by hand "

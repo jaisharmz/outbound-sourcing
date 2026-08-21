@@ -15,8 +15,11 @@ off a page, with the URL it came from.
 from __future__ import annotations
 
 import re
+import urllib.parse
+from pathlib import Path
 from dataclasses import dataclass, field
 
+from . import meter
 from .homepages import fetch_one, visible_text
 
 # Addresses written to defeat scrapers. Researchers do this constantly, and a
@@ -43,7 +46,63 @@ class PersonPage:
     emails: list[str] = field(default_factory=list)
     title_line: str | None = None
     corroborated: bool = False
+    source: str = ""            # supplied | github_blog | github_pages | guess
     tried: list[str] = field(default_factory=list)
+
+
+def discovered_urls(name: str, company: str | None = None) -> list[tuple[str, str]]:
+    """Ask GitHub who this is before guessing what they might be called.
+
+    Guessing covers the common shapes and misses the rest. `amansinghal927` is
+    not derivable from "Aman Singhal" by any rule, and on the Together AI run
+    that one handle was the difference between a contact and a miss. GitHub's
+    user search knows the mapping, and a user's `blog` field is a homepage the
+    person declared themselves -- which is better evidence than a URL we made up.
+
+    Returns (url, source) so the run can report what search recovered over
+    guessing rather than asserting that it helps.
+    """
+    from .config import Config
+    from .github_harvest import Client
+
+    try:
+        token = Config(Path(__file__).resolve().parent.parent / "config").secrets().get(
+            "GITHUB_TOKEN")
+    except Exception:
+        token = None
+    client = Client(token=token)
+
+    # Company deliberately not in the query: adding it returns zero results,
+    # because GitHub matches it against the profile's company field rather than
+    # widening the search. Corroboration happens later, against the page.
+    q = urllib.parse.quote(f"{name} in:name")
+    payload, status = client.get(f"/search/users?q={q}&per_page=10")
+    meter.bump("github_calls")
+    if status != "ok" or not payload:
+        # A throttled search is not an absence. Say so rather than silently
+        # falling through to guessing and reporting "no page found".
+        if status == "throttled":
+            meter.bump("github_throttled")
+        return []
+
+    out: list[tuple[str, str]] = []
+    for user in (payload.get("items") or [])[:8]:
+        login = user.get("login") or ""
+        detail, dstatus = client.get(f"/users/{login}")
+        meter.bump("github_calls")
+        if dstatus != "ok" or not detail:
+            continue
+        # Only trust a user whose GitHub profile name matches the person asked
+        # for. A login that merely ranked highly is the namesake trap again.
+        gh_name = (detail.get("name") or "").strip().lower()
+        want = [t for t in re.split(r"[^a-z]+", name.lower()) if t]
+        if not gh_name or not all(t in gh_name for t in (want[0], want[-1])):
+            continue
+        blog = (detail.get("blog") or "").strip()
+        if blog:
+            out.append((blog if blog.startswith("http") else f"https://{blog}", "github_blog"))
+        out.append((f"https://{login}.github.io/", "github_pages"))
+    return out
 
 
 def candidate_urls(name: str) -> list[str]:
@@ -89,7 +148,7 @@ def _looks_like(name: str, text: str) -> bool:
 
 
 def find(name: str, extra_urls: list[str] | None = None,
-         company: str | None = None) -> PersonPage:
+         company: str | None = None, search_first: bool = True) -> PersonPage:
     """Probe for a page. If `company` is given, require the page to mention it.
 
     Name matching alone is not enough. Probing "Pankaj Gupta" found a real page
@@ -99,7 +158,16 @@ def find(name: str, extra_urls: list[str] | None = None,
     someone with this name" from "this person's page".
     """
     out = PersonPage(name=name)
-    for url in (extra_urls or []) + candidate_urls(name):
+    ordered: list[tuple[str, str]] = [(u, "supplied") for u in (extra_urls or [])]
+    if search_first:
+        ordered += discovered_urls(name, company)
+    ordered += [(u, "guess") for u in candidate_urls(name)]
+
+    seen: set[str] = set()
+    for url, source in ordered:
+        if url in seen:
+            continue
+        seen.add(url)
         out.tried.append(url)
         r = fetch_one(url)
         if r.status not in ("ok", "js_shell") or not r.raw:
@@ -107,7 +175,7 @@ def find(name: str, extra_urls: list[str] | None = None,
         text = r.text or visible_text(r.raw)
         if not _looks_like(name, text):
             continue
-        out.url = r.final_url or url
+        out.url, out.source = r.final_url or url, source
         out.corroborated = bool(company) and company.lower().split()[0] in text.lower()
         out.status = "no_email"
         emails = emails_on(r.raw, text)
