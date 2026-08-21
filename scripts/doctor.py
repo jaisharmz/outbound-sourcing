@@ -37,17 +37,58 @@ def _c(name, status, detail="", fix=()) -> Check:
 # ----------------------------------------------------------------- checks
 
 
+# Shells read different files, and which one they read depends on whether the
+# shell is a login shell. This is the reason a fix can be correctly applied and
+# still appear not to work.
+PROFILES = {
+    "zsh": ["~/.zshrc", "~/.zprofile", "~/.zshenv"],
+    "bash": ["~/.bashrc", "~/.bash_profile", "~/.profile"],
+    "fish": ["~/.config/fish/config.fish"],
+}
+
+
 def check_path() -> Check:
-    """The console script has to be on PATH or nothing else in the docs works."""
-    found = shutil.which("outbound")
-    if found:
-        return _c("console script on PATH", OK, found)
+    """The console script has to be on PATH or nothing else in the docs works.
+
+    Reports which shell and which files were inspected, because "you never added
+    it" and "you added it to a file this shell does not read" need different
+    fixes and look identical from the error message alone. Being told to apply a
+    fix you already applied is worse than no message.
+    """
     venv_bin = Path(sys.executable).parent
+    found = shutil.which("outbound")
+    shell = Path(os.environ.get("SHELL", "")).name or "unknown"
+    candidates = PROFILES.get(shell, sorted({f for v in PROFILES.values() for f in v}))
+
+    mentions = []
+    for rel in candidates:
+        f = Path(rel).expanduser()
+        if f.exists() and str(venv_bin) in f.read_text():
+            mentions.append(rel)
+
+    checked = f"shell={shell}; checked {', '.join(candidates)}"
+    if found:
+        return _c("console script on PATH", OK, f"{found}  ({checked})")
+
+    if mentions:
+        # Applied, but not visible here. Almost always a non-interactive or
+        # non-login shell, which is also how the installer and any editor
+        # terminal run.
+        return _c("console script on PATH", WARN,
+                  f"`outbound` is not on PATH in THIS shell, but {', '.join(mentions)} "
+                  f"already adds it. This shell did not read that file "
+                  f"({checked})",
+                  ["open a new interactive terminal and re-run: outbound doctor",
+                   f"if you are in an editor or script, use the full path: "
+                   f"{venv_bin}/outbound",
+                   f"to make it work in non-login shells too, add the same line to "
+                   f"{'~/.zshenv' if shell == 'zsh' else '~/.profile'}"])
+
     return _c("console script on PATH", FAIL,
-              "`outbound` is not on your PATH, so every command in the docs will "
-              "say 'command not found'",
-              [f'echo \'export PATH="{venv_bin}:$PATH"\' >> ~/.zshrc',
-               "then open a new terminal, or run: source ~/.zshrc",
+              f"`outbound` is not on your PATH and no profile file adds it, so every "
+              f"command in the docs will say 'command not found' ({checked})",
+              [f'echo \'export PATH="{venv_bin}:$PATH"\' >> {candidates[0]}',
+               f"then open a new terminal, or run: source {candidates[0]}",
                f"or use the full path: {venv_bin}/outbound"])
 
 
