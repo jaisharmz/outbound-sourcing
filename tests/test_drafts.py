@@ -116,24 +116,24 @@ def _fixture(tmp_path, monkeypatch):
 
 
 def test_spam_traps_are_never_harvested():
-    """A page in the Together AI run carried hate@spam.net next to a real
+    """A page in the Nimbus AI run carried hate@spam.net next to a real
     address -- a trap planted to catch scrapers. Harvesting one is bad; sending
     to one is how a sending domain lands on a blocklist, and that damages every
     later message rather than just the one."""
     from scripts.person_pages import emails_on
 
-    found = emails_on("", "reach me at hate@spam.net or real@together.ai")
-    assert found == ["real@together.ai"]
+    found = emails_on("", "reach me at hate@spam.net or real@nimbus.test")
+    assert found == ["real@nimbus.test"]
     assert emails_on("", "noreply@x.test and postmaster@x.test") == []
 
 
 def test_role_addresses_are_not_people():
     """The pitch opens "Hello <first name>" and quotes the recipient's own work,
     so a shared inbox is the wrong destination even when it is deliverable.
-    Found live on a Groq engineer's site as web@zvfh.dev."""
+    Found live on a Tensorworks engineer's site as web@personal-site.test."""
     from scripts.person_pages import emails_on
 
-    assert emails_on("", "web@zvfh.dev or ashay@zvfh.dev") == ["ashay@zvfh.dev"]
+    assert emails_on("", "web@personal-site.test or ashay@personal-site.test") == ["ashay@personal-site.test"]
     assert emails_on("", "info@lab.edu and careers@lab.edu") == []
 
 
@@ -143,9 +143,9 @@ def test_brace_form_addresses_are_expanded():
     papers most likely to list a whole team."""
     from scripts.paper_emails import emails_in
 
-    t = "Authors {alice,bob carol}@groq.com, also dave@groq.com, cited eve@mit.edu"
-    assert emails_in(t, "groq.com") == ["alice@groq.com", "bob@groq.com",
-                                        "carol@groq.com", "dave@groq.com"]
+    t = "Authors {alice,bob carol}@tensorworks.test, also dave@tensorworks.test, cited eve@other-university.test"
+    assert emails_in(t, "tensorworks.test") == ["alice@tensorworks.test", "bob@tensorworks.test",
+                                        "carol@tensorworks.test", "dave@tensorworks.test"]
     # The brace group must be stripped before the plain pass, or "b}@x" survives.
     assert all("}" not in e for e in emails_in(t))
 
@@ -155,17 +155,17 @@ def test_an_address_matching_no_author_is_left_unattributed():
     so it is never guessed onto the nearest name."""
     from scripts.paper_emails import PaperHit, pair
 
-    hit = PaperHit("1234", "T", ["dabts@groq.com", "mystery@groq.com"],
+    hit = PaperHit("1234", "T", ["dabts@tensorworks.test", "mystery@tensorworks.test"],
                    ["Dennis Abts", "Someone Else"])
     att, counts = pair(hit)
-    assert att == {"dabts@groq.com": "Dennis Abts"}
+    assert att == {"dabts@tensorworks.test": "Dennis Abts"}
     assert counts == {"first_initial_last": 1}
 
 
 def test_old_papers_do_not_prove_current_employment():
-    """The 2022 Groq TSP paper yielded eight @groq.com addresses; at least two
+    """The 2022 Tensorworks TSP paper yielded eight @tensorworks.test addresses; at least two
     of those authors have since moved to NVIDIA. Pitching them "your team at
-    Groq" would be wrong about the one fact the email asserts. Same defect as a
+    Tensorworks" would be wrong about the one fact the email asserts. Same defect as a
     commit email, found the same way."""
     from scripts.paper_emails import paper_year_month
 
@@ -182,15 +182,15 @@ def test_a_rewritten_from_is_detected(monkeypatch):
     writing."""
     from email.utils import parseaddr
 
-    sent = "Jai Sharma <jais@berkeley.edu>"
-    delivered = ("From: Jai Sharma <jaisharmaus@gmail.com>\n"
-                 "Reply-To: jais@berkeley.edu\n")
+    sent = "Ada Lovelace <operator@university.test>"
+    delivered = ("From: Ada Lovelace <operator@gmail.com>\n"
+                 "Reply-To: operator@university.test\n")
     want = parseaddr(sent)[1].lower()
     got = next(parseaddr(l.partition(":")[2])[1].lower()
                for l in delivered.splitlines() if l.lower().startswith("from:"))
     assert want != got, "this fixture exists because the rewrite really happens"
 
-    ok_delivered = "From: Jai Sharma <jais@berkeley.edu>\n"
+    ok_delivered = "From: Ada Lovelace <operator@university.test>\n"
     got_ok = next(parseaddr(l.partition(":")[2])[1].lower()
                   for l in ok_delivered.splitlines() if l.lower().startswith("from:"))
     assert want == got_ok
@@ -232,7 +232,7 @@ def test_the_send_gate_blocks_a_rewritten_from(tmp_path, monkeypatch):
         "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash,"
         " to_addr, ok, headers, sent_at) VALUES ('gmail-smtp','step1_initial',"
         " 'startup','h','x@y.test',1,?,'')",
-        (f"From: Jai Sharma <{configured}>\n\n--- delivered ---\n"
+        (f"From: Ada Lovelace <{configured}>\n\n--- delivered ---\n"
          "From: Someone Else <rewritten@elsewhere.test>\n",))
     conn.commit()
     problems = gate(conn, cfg, "startup", "gmail-smtp")
@@ -254,7 +254,7 @@ def test_the_gate_passes_when_from_survives(tmp_path):
         "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash,"
         " to_addr, ok, headers, sent_at) VALUES ('gmail-smtp','step1_initial',"
         " 'startup','h','x@y.test',1,?,'')",
-        (f"From: Jai Sharma <{configured}>\n\n--- delivered ---\n"
-         f"From: Jai Sharma <{configured}>\n",))
+        (f"From: Ada Lovelace <{configured}>\n\n--- delivered ---\n"
+         f"From: Ada Lovelace <{configured}>\n",))
     conn.commit()
     assert not any("delivered as" in p for p in gate(conn, cfg, "startup", "gmail-smtp"))

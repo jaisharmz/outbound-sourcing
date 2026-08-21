@@ -186,7 +186,7 @@ def test_company_display_keeps_ai_in_the_name(config: Config):
     """'your team at Together' is wrong. Stripping AI from an AI company's name
     is the specific way suffix-trimming goes wrong in copy."""
     from scripts.normalize import display_company, normalize_company
-    assert display_company("Together AI") == "Together AI"
+    assert display_company("Nimbus AI") == "Nimbus AI"
     assert display_company("Vals AI") == "Vals AI"
     assert display_company("Backflip AI") == "Backflip AI"
     # legal suffixes still go, because nobody writes them in a sentence
@@ -201,7 +201,7 @@ def test_display_keeps_brand_words_that_look_like_suffixes():
     appear. A keep-list, because 'your team at Together' shipped once already."""
     from scripts.normalize import display_company as d
     # kept: part of the brand
-    for name in ("Together AI", "Vals AI", "Dynamic Labs", "Proof Holdings",
+    for name in ("Nimbus AI", "Vals AI", "Dynamic Labs", "Proof Holdings",
                  "Scene Infrastructure", "Cowboy Space", "Applied Intuition"):
         assert d(name) == name, name
     # removed: a legal form nobody writes in a sentence

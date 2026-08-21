@@ -121,8 +121,8 @@ def risk_flags(r: sqlite3.Row) -> list[str]:
     if acct_domain and email_domain and not (
             email_domain.endswith(acct_domain) or acct_domain.endswith(email_domain)):
         # A domain built from the person's own name is their permanent address,
-        # not a stale employer -- tri@tridao.me is more durable than an
-        # @together.ai address, not less. Flagging it would train the reviewer
+        # not a stale employer -- ren@renkovic.test is more durable than an
+        # @nimbus.test address, not less. Flagging it would train the reviewer
         # to dismiss this flag, which exists for the genuinely stale case.
         stem = re.sub(r"[^a-z]", "", (r["name"] or "").lower())
         host = re.sub(r"[^a-z]", "", email_domain.rsplit(".", 1)[0])

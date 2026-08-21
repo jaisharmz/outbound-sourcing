@@ -47,9 +47,9 @@ def test_your_own_claim_is_not_a_collision(shared):
 def test_person_collisions_are_caught_across_companies(shared):
     """Two members can reach the same person from different companies -- someone
     with two affiliations, or who moved. No company-level check sees that."""
-    C.add(shared, C.PERSON, "tri@tridao.me", who="ada", note="via Together AI")
-    held = C.held_by_others(shared, C.PERSON, "TRI@TRIDAO.ME", me="bob")
-    assert held and "tridao" in held[0].value
+    C.add(shared, C.PERSON, "ren@renkovic.test", who="ada", note="via Nimbus AI")
+    held = C.held_by_others(shared, C.PERSON, "REN@RENKOVIC.TEST", me="bob")
+    assert held and "renkovic" in held[0].value
 
 
 def test_a_stale_claim_stops_reserving(shared):

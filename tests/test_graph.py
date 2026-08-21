@@ -28,7 +28,7 @@ def test_unknown_kinds_are_refused(conn):
 
 
 def test_a_node_is_deduplicated_by_external_id(conn):
-    a = G.upsert_node(conn, "person", "Tri Dao", external={"openalex": "A123"})
+    a = G.upsert_node(conn, "person", "Ren Kovic", external={"openalex": "A123"})
     b = G.upsert_node(conn, "person", "T. Dao", external={"openalex": "A123"})
     assert a == b
 

@@ -40,7 +40,7 @@ JUNK = ("example.com", "domain.com", "yourname", "sentry.io", "wixpress",
 # Addresses planted to catch scrapers. Harvesting one is bad; sending to one is
 # worse -- a spam trap is how a sending domain lands on a blocklist, and the
 # damage is to every later message, not just the one. Found on a real page in
-# the Together AI run: hate@spam.net, sitting in the markup next to a real
+# the Nimbus AI run: hate@spam.net, sitting in the markup next to a real
 # address. A scraper takes both. This is the whole reason the prober must not be
 # trusted to hand addresses straight to the send path.
 TRAPS = ("spam.net", "spam.com", "nospam", "no-spam", "spamtrap", "@spam.",
@@ -49,8 +49,8 @@ TRAPS = ("spam.net", "spam.com", "nospam", "no-spam", "spamtrap", "@spam.",
 
 # Role addresses reach a function, not a person. The pitch opens "Hello <first
 # name>" and quotes the recipient's own work, so a shared inbox is the wrong
-# destination even when it is deliverable -- found on a Groq engineer's site as
-# web@zvfh.dev, which would have been sent a personally-addressed email.
+# destination even when it is deliverable -- found on a Tensorworks engineer's site as
+# web@personal-site.test, which would have been sent a personally-addressed email.
 ROLE_PREFIXES = ("web@", "info@", "contact@", "hello@", "admin@", "support@",
                  "sales@", "team@", "office@", "mail@", "help@", "press@",
                  "careers@", "jobs@", "hi@", "enquiries@", "inquiries@")
@@ -72,7 +72,7 @@ def discovered_urls(name: str, company: str | None = None) -> list[tuple[str, st
     """Ask GitHub who this is before guessing what they might be called.
 
     Guessing covers the common shapes and misses the rest. `amansinghal927` is
-    not derivable from "Aman Singhal" by any rule, and on the Together AI run
+    not derivable from "Aman Singhal" by any rule, and on the Nimbus AI run
     that one handle was the difference between a contact and a miss. GitHub's
     user search knows the mapping, and a user's `blog` field is a homepage the
     person declared themselves -- which is better evidence than a URL we made up.

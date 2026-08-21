@@ -144,8 +144,8 @@ def test_lab_suppression_actually_blocks(conn):
     from scripts.suppression import is_suppressed, suppress_lab
 
     suppress_lab(conn, "Dawn Song's group", "replied asking to stop")
-    assert is_suppressed(conn, "x@berkeley.edu", lab="Dawn Song's group")
-    assert is_suppressed(conn, "x@berkeley.edu", lab="Some Other Lab") is None
+    assert is_suppressed(conn, "x@university.test", lab="Dawn Song's group")
+    assert is_suppressed(conn, "x@university.test", lab="Some Other Lab") is None
 
 
 def test_per_lab_cap_counts_contacts(conn):
@@ -171,7 +171,7 @@ def test_per_lab_cap_counts_contacts(conn):
 
 
 def test_a_personal_domain_is_not_flagged_as_stale(conn):
-    """tri@tridao.me is more durable than an @together.ai address, not less.
+    """ren@renkovic.test is more durable than an @nimbus.test address, not less.
     Flagging it trains the reviewer to dismiss the flag that catches the real
     case -- an address left behind at a previous employer."""
     from scripts.review import risk_flags
@@ -181,14 +181,14 @@ def test_a_personal_domain_is_not_flagged_as_stale(conn):
                 "email_pattern_confidence": 0, "observed_at": None,
                 "verification_status": "mx_only", "personalization": "x",
                 "personalization_source_url": "https://x.test", "liveness_status": None,
-                "name": "Tri Dao", "email": "tri@tridao.me",
-                "title": "Research Scientist", "account_domain": "together.ai"}
+                "name": "Ren Kovic", "email": "ren@renkovic.test",
+                "title": "Research Scientist", "account_domain": "nimbus.test"}
         base.update(kw)
         return base
 
     assert not any("predate" in f for f in risk_flags(row()))
-    stale = risk_flags(row(name="Shang Zhu", email="shangzhu@umich.edu"))
-    assert any("umich.edu" in f and "together.ai" in f for f in stale)
+    stale = risk_flags(row(name="Shang Zhu", email="szhu@state-university.test"))
+    assert any("state-university.test" in f and "nimbus.test" in f for f in stale)
 
 
 def test_mx_only_is_not_a_risk_flag(conn):
@@ -217,7 +217,7 @@ def test_an_uncorroborated_page_is_a_namesake_not_a_contact(monkeypatch):
     from scripts.homepages import HomepageResult
 
     page = ('<html><body>Pankaj Gupta. Yoga instructor. '
-            '<a href="mailto:someone@yogins.com">mail</a></body></html>')
+            '<a href="mailto:someone@unrelated-hobby.test">mail</a></body></html>')
     monkeypatch.setattr(person_pages, "fetch_one",
                         lambda url, timeout=20: HomepageResult(
                             url, "ok", text="Pankaj Gupta. Yoga instructor.", raw=page))
@@ -225,7 +225,7 @@ def test_an_uncorroborated_page_is_a_namesake_not_a_contact(monkeypatch):
     hit = person_pages.find("Pankaj Gupta", company="Baseten")
     assert hit.status == "namesake_risk"
     assert not hit.corroborated
-    assert hit.emails == ["someone@yogins.com"]      # surfaced, never promoted
+    assert hit.emails == ["someone@unrelated-hobby.test"]      # surfaced, never promoted
 
     # Same page, no company asked for: nothing to corroborate against.
     assert person_pages.find("Pankaj Gupta").status == "found"
@@ -235,15 +235,15 @@ def test_a_corroborated_page_is_a_real_hit(monkeypatch):
     from scripts import person_pages
     from scripts.homepages import HomepageResult
 
-    page = ('<html><body>Jisen Li, AI Researcher at Together AI. '
-            'jisenli@together.ai</body></html>')
+    page = ('<html><body>Jisen Li, AI Researcher at Nimbus AI. '
+            'jlee@nimbus.test</body></html>')
     monkeypatch.setattr(person_pages, "fetch_one",
                         lambda url, timeout=20: HomepageResult(
-                            url, "ok", text="Jisen Li, AI Researcher at Together AI. "
-                                            "jisenli@together.ai", raw=page))
-    hit = person_pages.find("Jisen Li", company="Together AI")
+                            url, "ok", text="Jisen Li, AI Researcher at Nimbus AI. "
+                                            "jlee@nimbus.test", raw=page))
+    hit = person_pages.find("Jisen Li", company="Nimbus AI")
     assert hit.status == "found" and hit.corroborated
-    assert "jisenli@together.ai" in hit.emails
+    assert "jlee@nimbus.test" in hit.emails
 
 
 # ------------------------------------------------------ leadership at ingest

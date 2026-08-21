@@ -98,17 +98,17 @@ def test_resolve_and_ingest_agree_on_the_account_key(tmp_path):
     from scripts.normalize import normalize_company
 
     db = str(tmp_path / "t.db")
-    r = runner.invoke(app, ["company-resolve", "Together AI", "--domain", "together.ai",
+    r = runner.invoke(app, ["company-resolve", "Nimbus AI", "--domain", "nimbus.test",
                             "--tier", "startup", "--db", db])
     assert r.exit_code == 0, r.output
 
     conn = open_db(db)
     key = conn.execute("SELECT name_normalized FROM accounts").fetchone()[0]
-    assert key == normalize_company("Together AI")
+    assert key == normalize_company("Nimbus AI")
 
     class CF:
         company, domain, status, searches_used, budget_exhausted = \
-            "Together AI", "together.ai", "done", 0, False
+            "Nimbus AI", "nimbus.test", "done", 0, False
 
     assert upsert_account(conn, CF(), "test", "ref") == 1
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1

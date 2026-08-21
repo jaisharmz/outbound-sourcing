@@ -171,7 +171,7 @@ def test_clean_config_has_no_blockers(config: Config):
 def test_enabled_mailbox_with_a_placeholder_from_blocks(config_root):
     path = config_root / "mailboxes.yaml"
     text = path.read_text().replace(
-        "      address: you@example.com", "      address: jai@SENDING-DOMAIN-TBD.com"
+        "      address: you@example.com", "      address: you@SENDING-DOMAIN-TBD.com"
     ).replace("    enabled: false", "    enabled: true")
     path.write_text(text)
     blockers = Config(config_root).preflight("campaign")
@@ -189,7 +189,7 @@ def test_disabled_mailbox_placeholder_does_not_block(config_root):
     provider: console
     from:
       name: Your Name
-      address: jai@SENDING-DOMAIN-TBD.com""")
+      address: you@SENDING-DOMAIN-TBD.com""")
     path.write_text(text)
     assert not any("placeholder" in b for b in Config(config_root).preflight("campaign"))
 

@@ -21,8 +21,8 @@ def iso(days_ago: int) -> str:
 @pytest.mark.parametrize("email,name", [
     ("12345+user@users.noreply.github.com", "user"),
     ("dependabot[bot]@users.noreply.github.com", "dependabot[bot]"),
-    ("svc-template-updater@anyscale.com", "svc-template-updater"),
-    ("lattice-sdk-admin@anduril.com", "anduril-gh-bot"),
+    ("svc-template-updater@scalewave.test", "svc-template-updater"),
+    ("sdk-admin@ironline.test", "ironline-gh-bot"),
     ("no-reply@example.com", ""),
     ("ci@example.com", ""),
 ])
@@ -31,9 +31,9 @@ def test_bots_and_noreply_are_not_people(email, name):
 
 
 @pytest.mark.parametrize("email,name", [
-    ("aydin@anyscale.com", "Aydin Abiar"),
-    ("max.deliso@abridge.com", "Max DeLiso"),
-    ("chris@bayesianhealth.com", "Chris Hayen"),
+    ("amara@scalewave.test", "Amara Osei"),
+    ("marco.delgado@bridgeworks.test", "Marco Delgado"),
+    ("chris@bayeshealth.test", "Chris Hayen"),
 ])
 def test_real_addresses_survive(email, name):
     assert is_person_address(email, name)
@@ -92,8 +92,8 @@ def test_throttled_is_not_reported_as_absence():
 
 
 def test_infers_first_dot_last():
-    obs = {"max.deliso@abridge.com": ("Max DeLiso", iso(1)),
-           "blake.tsuhako@abridge.com": ("Blake Tsuhako", iso(1))}
+    obs = {"marco.delgado@bridgeworks.test": ("Marco Delgado", iso(1)),
+           "bea.tanaka@bridgeworks.test": ("Bea Tanaka", iso(1))}
     pattern, confidence, used = infer_pattern(obs)
     assert pattern == "first.last"
     assert confidence == 1.0
@@ -101,14 +101,14 @@ def test_infers_first_dot_last():
 
 
 def test_infers_first_only():
-    obs = {"chris@bayesianhealth.com": ("Chris Hayen", iso(1)),
-           "aydin@anyscale.com": ("Aydin Abiar", iso(1))}
+    obs = {"chris@bayeshealth.test": ("Chris Hayen", iso(1)),
+           "amara@scalewave.test": ("Amara Osei", iso(1))}
     assert infer_pattern(obs)[0] == "first"
 
 
 def test_infers_flast():
-    obs = {"oagrawal@anduril.com": ("Om Agrawal", iso(1)),
-           "vpuri@anduril.com": ("Vik Puri", iso(1))}
+    obs = {"oaguilar@ironline.test": ("Ola Aguilar", iso(1)),
+           "vpatel@ironline.test": ("Vera Patel", iso(1))}
     assert infer_pattern(obs)[0] == "flast"
 
 
@@ -119,9 +119,9 @@ def test_no_pattern_when_names_are_unusable():
 def test_a_learned_pattern_unlocks_a_new_name():
     """This is most of the value: one confirmed convention turns every name found
     elsewhere into a candidate address."""
-    assert apply_pattern("first.last", "Jane Quinn Roberts", "abridge.com") == \
-        "jane.roberts@abridge.com"
-    assert apply_pattern("flast", "Om Agrawal", "anduril.com") == "oagrawal@anduril.com"
+    assert apply_pattern("first.last", "Jo Quinn Rivera", "bridgeworks.test") == \
+        "jo.rivera@bridgeworks.test"
+    assert apply_pattern("flast", "Ola Aguilar", "ironline.test") == "oaguilar@ironline.test"
 
 
 def test_apply_pattern_refuses_a_single_token_name():
@@ -131,13 +131,13 @@ def test_apply_pattern_refuses_a_single_token_name():
 # ------------------------------------------- handles are not names
 
 @pytest.mark.parametrize("name,domain", [
-    ("oagrawal-anduril", "anduril.com"),      # org-suffixed login
+    ("oaguilar-ironline", "ironline.test"),      # org-suffixed login
     ("piotr-reducto", "reducto.ai"),
-    ("rasa-aadlv", "rasa.com"),               # org-prefixed login
-    ("rasabot", "rasa.com"),                  # bot without a marker
-    ("flock-auditor", "flocksafety.com"),
+    ("rasa-aadlv", "convoy.test"),               # org-prefixed login
+    ("rasabot", "convoy.test"),                  # bot without a marker
+    ("flock-auditor", "flock.test"),
     ("jymmi", "foursquare.com"),              # single lowercase token
-    ("danc", "rasa.com"),
+    ("danc", "convoy.test"),
 ])
 def test_logins_are_not_usable_names(name, domain):
     from scripts.github_harvest import name_is_usable
@@ -145,7 +145,7 @@ def test_logins_are_not_usable_names(name, domain):
 
 
 @pytest.mark.parametrize("name,domain", [
-    ("Tom Bocklisch", "rasa.com"),
+    ("Tom Bocklisch", "convoy.test"),
     ("Nicholas Pena", "foursquare.com"),
     ("Siddhant Nandkishor Pagari", "reducto.ai"),
     ("Matias Varnum", "skydio.com"),
@@ -163,5 +163,5 @@ def test_a_partial_name_is_not_usable():
 
 
 def test_bot_named_accounts_are_rejected_as_addresses():
-    assert not is_person_address("auditor@flocksafety.com", "flock-auditor")
-    assert not is_person_address("ci@rasa.com", "rasabot")
+    assert not is_person_address("auditor@flock.test", "flock-auditor")
+    assert not is_person_address("ci@convoy.test", "rasabot")

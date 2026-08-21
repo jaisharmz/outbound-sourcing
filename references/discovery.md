@@ -144,7 +144,7 @@ Worth its own note because getting it wrong produced a confident, plausible,
 completely incorrect answer — and then a wrong conclusion *about* the source.
 
 `last_known_institutions` is a list whose order is not recency. Taking `[0]` gives
-"Berkeley College" for a Together AI researcher and "BioQ Pharma" for a Stanford one.
+"Berkeley College" for a Nimbus AI researcher and "BioQ Pharma" for a Stanford one.
 On that reading the field looks like bad data, and the natural conclusion is that the
 source cannot be trusted for affiliations at all. That conclusion was wrong.
 
@@ -204,7 +204,7 @@ loop's queue with a heap, re-score the frontier after each expansion, and stop
 on marginal-yield collapse rather than on a hop limit.
 
 **Deliberately deferred, and the reason is a measurement rather than a
-preference.** The run on Together AI, Fireworks AI and Baseten (2026-08-21)
+preference.** The run on Nimbus AI, Fireworks AI and Baseten (2026-08-21)
 found that Together's 39 entry points came from the affiliation query, not from
 the graph, and that one-hop expansion returned the surrounding research
 community rather than more people at the company. Fireworks returned 3 and
@@ -218,7 +218,7 @@ starts to matter.
 
 ## The number to attack next: contactability
 
-The same run: **39 entry points at Together AI produced 5 findable addresses,
+The same run: **39 entry points at Nimbus AI produced 5 findable addresses,
 13%.** That loss is larger than anything better sourcing can recover -- doubling
 entry points at a 13% conversion is worth less than moving 13% to 30%.
 
@@ -253,7 +253,7 @@ guards were added and both worked as designed:
   matches are the ordinary English word. This removed Spanish ecology prose from
   1990 that happened to contain "cursor".
 - **prose test** — a real affiliation is a short comma-delimited address
-  (`Groq, Inc, Palo Alto, CA, USA`); a biography is a sentence. This removed
+  (`Tensorworks, Inc, Palo Alto, CA, USA`); a biography is a sentence. This removed
   "Kam L. Wong is Vice President of Kambea Industries…", which is how `Etched`
   matched the *verb* in semiconductor abstracts back to 1991.
 
@@ -276,11 +276,11 @@ organisation. The same shape recurs:
 | the plausible wrong answer | what made it wrong | what caught it |
 | --- | --- | --- |
 | Cursor Insight Ltd. | different company, same name | knowing they differ; nothing else |
-| Kaitlyn Zhou "at Together AI" | an invited talk, not employment | reading the sentence around the match |
+| Kaitlyn Zhou "at Nimbus AI" | an invited talk, not employment | reading the sentence around the match |
 | OpenAlex `last_known_institutions[0]` | an unordered list read as ranked | checking the field's contract |
 | a16z portfolio "no current investments" | 855 companies in a `data-` attribute | curling raw HTML |
 | `hate@spam.net` on a real page | a trap planted for scrapers | a denylist |
-| `web@zvfh.dev` | a role account, not a person | a prefix rule |
+| `web@personal-site.test` | a role account, not a person | a prefix rule |
 
 The common defence is not a better heuristic. It is **checking the claim against
 a second, independent source** before it becomes a contact -- and where that is
@@ -292,14 +292,14 @@ The personal-page channel is not universal. Measured 2026-08-21:
 
 | population | example | personal page with an address | what works instead |
 | --- | --- | --- | --- |
-| academically-publishing ML research | Together AI | 13 of 42 | personal pages (github.io, custom domains) |
-| systems and hardware | Groq | 2 of 72, both unusable | **paper first pages** |
+| academically-publishing ML research | Nimbus AI | 13 of 42 | personal pages (github.io, custom domains) |
+| systems and hardware | Tensorworks | 2 of 72, both unusable | **paper first pages** |
 | non-publishing product companies | Baseten, Fireworks | 0 | neither; needs another channel entirely |
 
-Groq had 72 entry points and 48 of them had no page at all. Its people publish at
+Tensorworks had 72 entry points and 48 of them had no page at all. Its people publish at
 ISCA/MICRO/ASPLOS rather than blogging, and those papers print author emails at
-the company domain under the title. `outbound paper-emails Groq --domain
-groq.com` recovered 8 named, first-party `@groq.com` addresses in about 20
+the company domain under the title. `outbound paper-emails Tensorworks --domain
+tensorworks.test` recovered 8 named, first-party `@tensorworks.test` addresses in about 20
 seconds from a single paper, and measured the domain convention
 (`first_initial_last`, 7 samples) which then applies to the other 64 people.
 
