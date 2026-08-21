@@ -729,9 +729,13 @@ def demo(
     db: Optional[str] = typer.Option(None, "--db"),
     fixtures: Optional[str] = typer.Option(None, "--fixtures"),
 ):
-    """End-to-end on fixture contacts through the console mailbox. No network."""
+    """End-to-end on fixture contacts through the console mailbox. No network.
+
+    Writes to a scratch database by default. It used to default to the real one,
+    which quietly seeded three fake companies into production data.
+    """
     cfg = _config(config)
-    conn = open_db(db)
+    conn = open_db(db or ROOT / "state" / "demo.db")
     suppression.load_csv(conn, cfg.root / "suppression.csv")
 
     src = Path(fixtures) if fixtures else ROOT / "tests" / "fixtures" / "candidates"
