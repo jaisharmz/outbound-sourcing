@@ -68,9 +68,7 @@ ORG_SLUGS = {
 }
 
 
-def name_key(name: str) -> str:
-    """Sorted tokens, so reversed name order still matches one person."""
-    return " ".join(sorted(t for t in re.split(r"[^a-z]+", (name or "").lower()) if t))
+from .normalize import name_key      # noqa: E402  (one definition, in normalize)
 
 
 def slug_for(company: str) -> str | None:

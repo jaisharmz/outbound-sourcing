@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import graph as G
 from .db import utcnow
+from .normalize import name_key
 from .openalex import Client, Work, coauthor_counts
 
 
@@ -91,8 +92,7 @@ def seed_company(conn: sqlite3.Connection, client: Client, company: str,
         # Over-merging inside one company's affiliation set is the same bet as
         # merging duplicate author ids: two people at one employer with the same
         # name in reversed order is vanishingly rare, a duplicate email is not.
-        key = " ".join(sorted(
-            t for t in re.split(r"[^a-z]+", rec["name"].strip().lower()) if t))
+        key = name_key(rec["name"])
         cur = people.get(key)
         if cur is None:
             people[key] = {**rec, "openalex_ids": [aid]}

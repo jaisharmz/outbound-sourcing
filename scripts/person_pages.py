@@ -31,7 +31,7 @@ OBFUSCATED = [
     re.compile(r"([A-Za-z0-9._%+-]+)\s*(?:\[at\]|\(at\)|&#64;|\{at\})\s*"
                r"([A-Za-z0-9.-]+\.[A-Za-z]{2,})", re.I),
 ]
-PLAIN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+from .normalize import EMAIL_IN_TEXT as PLAIN
 MAILTO = re.compile(r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})', re.I)
 
 JUNK = ("example.com", "domain.com", "yourname", "sentry.io", "wixpress",

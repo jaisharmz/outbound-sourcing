@@ -52,7 +52,7 @@ UA = {"User-Agent": f"outbound-sourcing/1.0 ({_contact()})"}
 ARXIV = "http://export.arxiv.org/api/query"
 SEARCH_DELAY = 3.0      # arXiv's requested rate
 
-PLAIN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+from .normalize import EMAIL_IN_TEXT as PLAIN
 BRACE = re.compile(r"[\{\[]([A-Za-z0-9._%+,\s-]+)[\}\]]\s*@\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 
 

@@ -51,6 +51,23 @@ def normalize_company(name: str) -> str:
     return " ".join(tokens)
 
 
+# One definition each. Both of these were duplicated across modules that grew
+# their own copy, and a regex that exists twice drifts: the second copy is the
+# one nobody remembers to fix.
+EMAIL_IN_TEXT = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def name_key(name: str) -> str:
+    """Sorted lowercase tokens, so reversed name order matches one person.
+
+    OpenAlex carries both "Thomas Wolf" and "Wolf Thomas" for the same author.
+    Distinct from normalize_person, which strips honorifics and keeps order --
+    that one answers "is this the same human", this one answers "is this the
+    same name written differently".
+    """
+    return " ".join(sorted(t for t in re.split(r"[^a-z]+", (name or "").lower()) if t))
+
+
 def normalize_person(name: str) -> str:
     """'Dr. Jane Q. Doe III' -> 'jane doe'. Used to catch the same human twice."""
     s = strip_accents(name).lower()
