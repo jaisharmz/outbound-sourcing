@@ -19,7 +19,7 @@ from .db import open_db, transaction, utcnow
 from .errors import ConfigError
 from .discover_companies import main as discover_main
 from .ingest_candidates import ingest
-from .normalize import display_company, registrable_domain
+from .normalize import display_company, normalize_company, registrable_domain
 from . import prefilter as prefilter_mod
 from . import providers, suppression, templates
 
@@ -638,8 +638,13 @@ def company_resolve(
     typer.echo("  suppression: clear")
     typer.echo("  personal exclusions: clear")
 
+    # normalize_company is the key ingest matches on. Using anything else here
+    # creates a second account row for the same company, and the routing written
+    # to the first never reaches the contacts attached to the second -- which is
+    # exactly what happened: LOWER(name) matched nothing ingest would look up.
+    key = normalize_company(name)
     row = conn.execute("SELECT id, name, domain, liveness_status, liveness_note, status"
-                       " FROM accounts WHERE LOWER(name) = ?", (name.lower(),)).fetchone()
+                       " FROM accounts WHERE name_normalized = ?", (key,)).fetchone()
     if row:
         typer.echo(f"  known account id={row['id']} domain={row['domain'] or '(none)'} "
                    f"status={row['status']} liveness={row['liveness_status'] or '(unchecked)'}")
@@ -688,8 +693,8 @@ def company_resolve(
                 "INSERT INTO accounts (name, name_normalized, domain, source, status,"
                 " tier, campaign, ai_depth, created_at, updated_at)"
                 " VALUES (?,?,?,?,'new',?,?,?,?,?)",
-                (name, registrable_domain(name.lower()) or name.lower(), domain,
-                 "outbound-run", tier, campaign, ai_depth, utcnow(), utcnow()))
+                (name, key, domain, "outbound-run", tier, campaign, ai_depth,
+                 utcnow(), utcnow()))
             aid = cur.lastrowid
     meter.flush(label="company-resolve")
     typer.echo(f"  routed: account {aid} -> tier={tier} campaign={campaign} "
@@ -1327,23 +1332,12 @@ def drafts_cmd(
     db: Optional[str] = typer.Option(None, "--db"),
 ):
     """What is sitting in drafts, waiting on a human to press send."""
+    from .send_queue import print_drafts
+
     conn = open_db(db)
-    rows = conn.execute(
-        "SELECT m.id, m.to_addr, m.cc, m.subject, m.attachment_names, m.drafted_at,"
-        "       c.name, m.provider_message_id"
-        "  FROM messages m JOIN contacts c ON c.id = m.contact_id"
-        " WHERE m.state = 'drafted' ORDER BY m.drafted_at").fetchall()
-    if not rows:
-        typer.echo("no drafts waiting")
-        return
-    typer.secho(f"\n{len(rows)} draft(s) waiting to be sent by hand:", fg=typer.colors.CYAN)
-    for r in rows:
-        typer.echo(f"  [{r['id']}] {r['name'][:20]:<22} {r['to_addr']:<26} "
-                   f"cc={r['cc'] or '(none)'}")
-        typer.echo(f"       {(r['subject'] or '(no subject)')[:88]}")
-        typer.echo(f"       attachments: {r['attachment_names'] or '(none)'}")
-    typer.echo("\nNone of these count as contacted. After sending them in Gmail: "
-               "outbound mark-sent --all")
+    if print_drafts(conn):
+        typer.echo("\nNone of these count as contacted. After sending them in Gmail:\n"
+                   "  outbound mark-sent --all")
 
 
 @app.command("mark-sent")

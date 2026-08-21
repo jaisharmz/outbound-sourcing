@@ -156,6 +156,25 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
     return result.ok, (result.error or f"{verb} {row['email']}")
 
 
+def print_drafts(conn) -> int:
+    """List what is sitting in drafts. Shared by `outbound drafts` and the run
+    summary, so the two can never drift into disagreeing."""
+    rows = conn.execute(
+        "SELECT m.id, m.to_addr, m.cc, m.subject, m.attachment_names, c.name"
+        "  FROM messages m JOIN contacts c ON c.id = m.contact_id"
+        " WHERE m.state = 'drafted' ORDER BY m.drafted_at").fetchall()
+    if not rows:
+        print("no drafts waiting")
+        return 0
+    print(f"\n{len(rows)} draft(s) waiting in Gmail:")
+    for r in rows:
+        print(f"  [{r['id']}] {r['name'][:20]:<22} {r['to_addr']:<26} "
+              f"cc={r['cc'] or '(none)'}")
+        print(f"       {(r['subject'] or '(no subject)')[:86]}")
+        print(f"       attachments: {r['attachment_names'] or '(none)'}")
+    return len(rows)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Send approved contacts. One mailbox, by hand.")
     ap.add_argument("--limit", type=int, default=20)
@@ -231,12 +250,16 @@ def main(argv: list[str] | None = None) -> int:
     past = "drafted" if mode == "draft" else "sent"
     print(f"\n{done} {('would be ' + past) if args.dry_run else past}, {failed} failed")
     if mode == "draft" and done and not args.dry_run:
-        print(f"\nReview them in Gmail and send by hand. Nothing counts as contacted "
-              f"until then:\n"
+        # The whole draft list, printed here rather than left behind a command
+        # the operator has to remember exists. `mark-sent` is the one manual
+        # step in the flow, so it goes on screen at the moment it becomes due.
+        print_drafts(conn)
+        print(f"\nNothing above counts as contacted yet:\n"
               f"  - the daily cap is untouched ({already}/{cap} used today)\n"
-              f"  - these contacts are still 'new', not 'active'\n"
+              f"  - these contacts are not marked active\n"
               f"  - reply tracking and company suppression have not started\n"
-              f"After sending, run: outbound mark-sent --all")
+              f"\nReview them in Gmail, send by hand, then run:\n"
+              f"  outbound mark-sent --all")
     return 1 if failed else 0
 
 

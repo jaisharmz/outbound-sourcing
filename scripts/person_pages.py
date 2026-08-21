@@ -37,6 +37,16 @@ MAILTO = re.compile(r'mailto:([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})', 
 JUNK = ("example.com", "domain.com", "yourname", "sentry.io", "wixpress",
         "squarespace", "godaddy", "@2x", "email.com", "gmail.com.")
 
+# Addresses planted to catch scrapers. Harvesting one is bad; sending to one is
+# worse -- a spam trap is how a sending domain lands on a blocklist, and the
+# damage is to every later message, not just the one. Found on a real page in
+# the Together AI run: hate@spam.net, sitting in the markup next to a real
+# address. A scraper takes both. This is the whole reason the prober must not be
+# trusted to hand addresses straight to the send path.
+TRAPS = ("spam.net", "spam.com", "nospam", "no-spam", "spamtrap", "@spam.",
+         "abuse@", "postmaster@", "honeypot", "donotreply", "do-not-reply",
+         "noreply", "no-reply", "hate@", "spamgourmet", "trashmail", "mailinator")
+
 
 @dataclass
 class PersonPage:
@@ -129,6 +139,8 @@ def emails_on(page: str, text: str) -> list[str]:
     for e in found:
         e = e.strip().lower().rstrip(".")
         if e in seen or any(j in e for j in JUNK) or len(e) > 60:
+            continue
+        if any(t in e for t in TRAPS):
             continue
         seen.add(e)
         out.append(e)

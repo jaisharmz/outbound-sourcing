@@ -85,3 +85,30 @@ def test_candidate_evidence_url_must_be_absolute():
     with pytest.raises(ValidationError):
         Evidence(claim="x works at Y as Z", url="/relative", quote="q",
                  retrieved_at="2026-08-21T00:00:00Z")
+
+
+def test_resolve_and_ingest_agree_on_the_account_key(tmp_path):
+    """company-resolve looked the account up by LOWER(name) while ingest keys on
+    normalize_company. The two never matched, so ingest created a second row and
+    the routing written to the first never reached the contacts -- they landed
+    with campaign NULL and were invisible to the review export. Same silent
+    shape as the original routing bug, one layer down."""
+    from scripts.db import open_db
+    from scripts.ingest_candidates import upsert_account
+    from scripts.normalize import normalize_company
+
+    db = str(tmp_path / "t.db")
+    r = runner.invoke(app, ["company-resolve", "Together AI", "--domain", "together.ai",
+                            "--tier", "startup", "--db", db])
+    assert r.exit_code == 0, r.output
+
+    conn = open_db(db)
+    key = conn.execute("SELECT name_normalized FROM accounts").fetchone()[0]
+    assert key == normalize_company("Together AI")
+
+    class CF:
+        company, domain, status, searches_used, budget_exhausted = \
+            "Together AI", "together.ai", "done", 0, False
+
+    assert upsert_account(conn, CF(), "test", "ref") == 1
+    assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1

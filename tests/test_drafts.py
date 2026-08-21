@@ -113,3 +113,15 @@ def _fixture(tmp_path, monkeypatch):
                        " WHERE c.id=1").fetchone()
     monkeypatch.setattr(send_queue.suppression, "is_suppressed", lambda *a, **k: None)
     return row, conn, config, mailbox
+
+
+def test_spam_traps_are_never_harvested():
+    """A page in the Together AI run carried hate@spam.net next to a real
+    address -- a trap planted to catch scrapers. Harvesting one is bad; sending
+    to one is how a sending domain lands on a blocklist, and that damages every
+    later message rather than just the one."""
+    from scripts.person_pages import emails_on
+
+    found = emails_on("", "reach me at hate@spam.net or real@together.ai")
+    assert found == ["real@together.ai"]
+    assert emails_on("", "noreply@x.test and postmaster@x.test") == []

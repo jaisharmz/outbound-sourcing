@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -38,28 +39,67 @@ class ProductionDatabaseError(RuntimeError):
     """A non-production caller tried to open the real database."""
 
 
+# Console scripts that are allowed to touch production. Anything else has to
+# say so out loud.
+SANCTIONED_ENTRYPOINTS = ("outbound",)
+
+
+def _entrypoint() -> tuple[bool, str]:
+    """Is this a real CLI invocation, or something ad-hoc?
+
+    `python -m scripts.outbound` and the `outbound` console script are the
+    sanctioned ways in. `python -c`, a REPL, a scratch script and pytest are not.
+    """
+    main = sys.modules.get("__main__")
+    spec = getattr(main, "__spec__", None)
+    name = getattr(spec, "name", "") or ""
+    if name.startswith("scripts."):
+        return True, f"python -m {name}"
+    argv0 = Path(sys.argv[0]).name if sys.argv else ""
+    if argv0 in SANCTIONED_ENTRYPOINTS:
+        return True, f"{argv0} CLI"
+    if argv0 in ("-c", "") or argv0.startswith("-"):
+        return False, "an inline `python -c` script"
+    if "pytest" in argv0:
+        return False, "pytest"
+    return False, f"{argv0 or 'an unknown caller'}"
+
+
 def _guard_production(p: Path) -> None:
     """Refuse to open the production database from a context that must not.
 
-    `demo` used to default to it and quietly seeded three fixture companies into
-    real data, shifting every account id. That was found by accident, which is
-    the wrong way to find it. Anything running under pytest, or anything that
-    sets OUTBOUND_NO_PROD_DB, now fails loudly instead.
+    Default-deny, not opt-in. The first version only fired under pytest or when
+    OUTBOUND_NO_PROD_DB was set, which meant an ad-hoc `python -c` -- the exact
+    thing people reach for while checking something -- sailed straight through
+    and wrote a junk row into real data. That is the same shape as `demo`
+    defaulting to production and seeding three fixture companies into it.
+
+    Twice is a pattern, so the rule is inverted: only the CLI entrypoints may
+    open production. Everything else names a scratch path, sets OUTBOUND_DB, or
+    sets OUTBOUND_ALLOW_PROD=1 to say deliberately that it means production.
     """
     try:
         if p.resolve() != default_db_path().resolve():
             return
     except OSError:
         return
-    reason = None
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        reason = "running under pytest"
-    elif os.environ.get("OUTBOUND_NO_PROD_DB"):
-        reason = "OUTBOUND_NO_PROD_DB is set"
-    if reason:
+    if os.environ.get("OUTBOUND_ALLOW_PROD") == "1":
+        return
+    if os.environ.get("OUTBOUND_NO_PROD_DB"):
         raise ProductionDatabaseError(
-            f"refusing to open the production database at {p} ({reason}). "
-            f"Pass an explicit --db / path to a scratch database instead."
+            f"refusing to open the production database at {p} "
+            f"(OUTBOUND_NO_PROD_DB is set). Point at a scratch database instead: "
+            f"set OUTBOUND_DB=/path/to/scratch.db or pass an explicit path."
+        )
+    sanctioned, who = _entrypoint()
+    if not sanctioned:
+        raise ProductionDatabaseError(
+            f"refusing to open the production database at {p}.\n"
+            f"  caller: {who}\n"
+            f"  Only the outbound CLI may open production. For a scratch run set "
+            f"OUTBOUND_DB=/path/to/scratch.db or pass an explicit path.\n"
+            f"  If you genuinely mean production from here, set OUTBOUND_ALLOW_PROD=1 "
+            f"-- and be aware that writes will be real."
         )
 
 
