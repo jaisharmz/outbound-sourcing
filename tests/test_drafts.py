@@ -160,3 +160,15 @@ def test_an_address_matching_no_author_is_left_unattributed():
     att, counts = pair(hit)
     assert att == {"dabts@groq.com": "Dennis Abts"}
     assert counts == {"first_initial_last": 1}
+
+
+def test_old_papers_do_not_prove_current_employment():
+    """The 2022 Groq TSP paper yielded eight @groq.com addresses; at least two
+    of those authors have since moved to NVIDIA. Pitching them "your team at
+    Groq" would be wrong about the one fact the email asserts. Same defect as a
+    commit email, found the same way."""
+    from scripts.paper_emails import paper_year_month
+
+    assert paper_year_month("2206.11062v1") == (2022, 6)
+    assert paper_year_month("2407.03651v2") == (2024, 7)
+    assert paper_year_month("nonsense") is None

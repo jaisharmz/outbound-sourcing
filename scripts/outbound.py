@@ -822,6 +822,8 @@ def paper_emails_cmd(
     domain: str = typer.Option(..., "--domain"),
     terms: Optional[str] = typer.Option(None, "--terms", help="extra search phrases, comma-sep"),
     max_papers: int = typer.Option(10, "--max-papers"),
+    max_age: int = typer.Option(2, "--max-age-years",
+                                help="papers older than this do not prove current employment"),
     json_out: Optional[str] = typer.Option(None, "--json"),
 ):
     """Read author addresses off paper first pages. For the population personal
@@ -837,7 +839,8 @@ def paper_emails_cmd(
     from .paper_emails import harvest, pair
 
     extra = [t.strip() for t in (terms or "").split(",") if t.strip()]
-    hits = harvest(company, domain, extra_terms=extra, max_papers=max_papers)
+    hits, skipped = harvest(company, domain, extra_terms=extra, max_papers=max_papers,
+                            max_age_years=max_age)
     rows, conventions = [], {}
     for h in hits:
         att, counts = pair(h)
@@ -859,9 +862,14 @@ def paper_emails_cmd(
         top = max(conventions.items(), key=lambda kv: kv[1])
         typer.echo(f"  domain convention: {top[0]} ({top[1]} sample(s)) "
                    f"-- applies to colleagues not on these papers")
+    if skipped:
+        typer.secho(f"  skipped {len(skipped)} paper(s) older than {max_age}y: "
+                    f"{', '.join(skipped[:4])}", fg=typer.colors.YELLOW)
+        typer.echo("    An address on an old paper proves where someone worked then, "
+                   "not now.")
     if not rows:
-        typer.secho("  no addresses. Either the papers are paywalled or the venue "
-                    "does not print them.", fg=typer.colors.YELLOW)
+        typer.secho("  no addresses. Either the papers are paywalled, the venue does "
+                    "not print them, or they were all too old.", fg=typer.colors.YELLOW)
     if json_out:
         Path(json_out).write_text(json.dumps(rows, indent=2))
         typer.echo(f"  wrote {json_out}")

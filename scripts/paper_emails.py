@@ -41,6 +41,23 @@ PLAIN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BRACE = re.compile(r"[\{\[]([A-Za-z0-9._%+,\s-]+)[\}\]]\s*@\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 
 
+# How old a paper may be before its addresses stop meaning current employment.
+# A paper address proves where someone worked when it was submitted, not where
+# they work now -- the same defect as a commit email, and it bit immediately:
+# the 2022 Groq TSP paper yielded eight @groq.com addresses, and at least two of
+# those authors (Dennis Abts, Sahil Parmar) have since moved to NVIDIA. Pitching
+# them "your team at Groq" would be wrong about the one fact the email asserts.
+MAX_PAPER_AGE_YEARS = 2
+
+
+def paper_year_month(arxiv_id: str) -> tuple[int, int] | None:
+    """arXiv ids encode YYMM, so age is free -- no extra request."""
+    m = re.match(r"(\d{2})(\d{2})\.", arxiv_id)
+    if not m:
+        return None
+    return 2000 + int(m.group(1)), int(m.group(2))
+
+
 @dataclass
 class PaperHit:
     arxiv_id: str
@@ -111,23 +128,34 @@ def emails_in(text: str, domain: str | None = None) -> list[str]:
 
 
 def harvest(company: str, domain: str, extra_terms: list[str] | None = None,
-            max_papers: int = 12) -> list[PaperHit]:
-    """Papers naming the company, and the addresses on their first pages."""
+            max_papers: int = 12, now_year: int = 2026,
+            max_age_years: int | None = None) -> tuple[list[PaperHit], list[str]]:
+    """Papers naming the company, and the addresses on their first pages.
+
+    Returns (hits, skipped) where skipped names the papers dropped as too old to
+    testify to current employment.
+    """
+    max_age = MAX_PAPER_AGE_YEARS if max_age_years is None else max_age_years
     queries = [f'all:"{company}"'] + [f'all:"{t}"' for t in (extra_terms or [])]
     seen_ids: set[str] = set()
     hits: list[PaperHit] = []
+    skipped: list[str] = []
     for q in queries:
         for aid, title, authors in search(q, max_results=max_papers):
             if aid in seen_ids:
                 continue
             seen_ids.add(aid)
+            ym = paper_year_month(aid)
+            if ym and (now_year - ym[0]) > max_age:
+                skipped.append(f"{aid} ({ym[0]}-{ym[1]:02d}, {now_year - ym[0]}y old)")
+                continue
             text = first_page_text(aid)
             if not text:
                 continue
             emails = emails_in(text, domain)
             if emails:
                 hits.append(PaperHit(aid, title, emails, authors))
-    return hits
+    return hits, skipped
 
 
 def pair(hit: PaperHit) -> tuple[dict[str, str], dict[str, int]]:
