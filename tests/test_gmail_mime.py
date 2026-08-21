@@ -65,7 +65,7 @@ def test_body_survives_encoding(config, gmail):
     email, msg = build(config, gmail)
     body = msg.get_body(preferencelist=("plain",)).get_content()
     assert "Hello Ada!" in body
-    assert "123 Example Street" in body   # the compliance footer
+    assert "unsubscribe" not in body.lower()   # nothing is appended
 
 
 def test_no_tracking_pixel(config, gmail):

@@ -164,23 +164,6 @@ def test_wire_size_accounts_for_base64():
     assert wire_size(14_720_000) > 19_000_000
 
 
-def test_placeholder_mailing_address_blocks_a_campaign(config: Config):
-    """CAN-SPAM needs a real address, and the footer ships on every template."""
-    path = config.root / "persona.md"
-    path.write_text(path.read_text().replace("123 Example Street", "[STREET ADDRESS NEEDED]"))
-    reloaded = Config(config.root)
-    blockers = reloaded.preflight("campaign")
-    assert any("STREET ADDRESS NEEDED" in b for b in blockers)
-    assert any("CAN-SPAM" in b for b in blockers)
-
-
-def test_placeholder_does_not_stop_the_config_from_loading(config: Config):
-    """A test send to yourself must still render the placeholder so you see it."""
-    path = config.root / "persona.md"
-    path.write_text(path.read_text().replace("123 Example Street", "[STREET ADDRESS NEEDED]"))
-    Config(config.root)   # must not raise
-
-
 def test_clean_config_has_no_blockers(config: Config):
     assert config.preflight("campaign") == []
 

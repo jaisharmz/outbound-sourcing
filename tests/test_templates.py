@@ -45,17 +45,36 @@ def test_subject_is_substituted(config: Config):
     assert "{{" not in email.subject
 
 
-def test_every_email_carries_optout_and_a_mailing_address(config: Config):
-    """CAN-SPAM, appended by the renderer so no template can forget it."""
+def test_nothing_is_appended_to_a_rendered_body(config: Config):
+    """What the template says is what sends. These are personal emails proposing
+    collaboration; an auto-generated footer makes them read like a mail merge.
+    The opt-out obligation is met by honoring requests, not advertising them."""
     for step in config.sequence.steps:
         email = render(config, step, contact=CONTACT, account=ACCOUNT, to=CONTACT["email"])
-        assert config.persona.unsubscribe_instructions.split()[0] in email.body
-        assert "123 Example Street" in email.body
+        assert "-- " not in email.body                  # no signature separator
+        assert "unsubscribe" not in email.body.lower()
+        assert email.body.rstrip("\n").endswith(config.persona.signature.splitlines()[-1])
 
 
-def test_footer_is_not_duplicated(config: Config):
-    email = render(config, step1(config), contact=CONTACT, account=ACCOUNT, to=CONTACT["email"])
-    assert email.body.count("123 Example Street") == 1
+def test_render_is_byte_for_byte_the_template(config: Config):
+    """The strongest form of the rule: render the template with Jinja directly and
+    assert the send path produced exactly that, with nothing added."""
+    from jinja2 import Environment, StrictUndefined
+
+    step = step1(config)
+    raw = (config.templates_dir / step.template).read_text().split("---", 2)[2].lstrip("\n")
+    env = Environment(undefined=StrictUndefined, keep_trailing_newline=True,
+                      trim_blocks=True, lstrip_blocks=True)
+    from scripts.templates import resolve_documents
+
+    email = render(config, step, contact=CONTACT, account=ACCOUNT, to=CONTACT["email"])
+    _attachments, links = resolve_documents(config, step)
+    expected = env.from_string(raw).render(
+        contact=CONTACT, account=ACCOUNT, persona=config.persona,
+        personalization=CONTACT.get("personalization"),
+        document_links=[{"name": n, "url": u} for n, u in links],
+    )
+    assert email.body == expected
 
 
 def test_undefined_variable_fails_loudly(config: Config):

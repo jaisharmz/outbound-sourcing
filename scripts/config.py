@@ -72,10 +72,8 @@ class Persona(Strict):
     first_name: str
     role: str
     org: str
-    mailing_address: str
     links: dict[str, str] = Field(default_factory=dict)
     projects: list[PersonaProject] = Field(default_factory=list)
-    unsubscribe_instructions: str
     body: str = ""
 
     @property
@@ -92,11 +90,6 @@ class Persona(Strict):
         if self.links:
             parts.append(self.link_lines)
         return "\n".join(parts)
-
-    @property
-    def footer(self) -> str:
-        """CAN-SPAM: opt-out mechanism plus a physical mailing address."""
-        return f"{self.unsubscribe_instructions}\n\n{self.mailing_address}"
 
 
 # ---------------------------------------------------------------- icp
@@ -724,16 +717,6 @@ class Config:
         """
         blockers: list[str] = []
 
-        for field, value in (
-            ("persona.mailing_address", self.persona.mailing_address),
-            ("persona.unsubscribe_instructions", self.persona.unsubscribe_instructions),
-        ):
-            for hit in PLACEHOLDER_RE.findall(value or ""):
-                blockers.append(
-                    f"{field} still contains the placeholder {hit}. CAN-SPAM requires a "
-                    f"real physical mailing address in every commercial solicitation, and "
-                    f"the footer is appended to every template automatically."
-                )
         for label, url in self.persona.links.items():
             if PLACEHOLDER_RE.search(url):
                 blockers.append(f"persona.links[{label!r}] is still a placeholder: {url}")

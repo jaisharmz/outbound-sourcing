@@ -25,9 +25,8 @@ from . import providers, suppression, templates
 
 app = typer.Typer(add_completion=False, help="Outbound sourcing: discovery, review, send.")
 db_app = typer.Typer(help="Database maintenance.")
-suppress_app = typer.Typer(help="Permanent global suppression.")
+suppress_app = None   # suppress is a plain command, not a group
 app.add_typer(db_app, name="db")
-app.add_typer(suppress_app, name="suppress")
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -504,15 +503,30 @@ def cc_resolve(
 # ------------------------------------------------------------------ suppress
 
 
-@suppress_app.command("add")
+def _infer_kind(value: str) -> str:
+    """An address, a domain, or a company name, told apart by shape."""
+    if "@" in value:
+        return "email"
+    if "." in value and " " not in value:
+        return "domain"
+    return "company"
+
+
+@app.command("suppress")
 def suppress_add(
-    value: str = typer.Argument(...),
-    kind: str = typer.Option("email", "--kind", help="email | domain | company"),
-    reason: str = typer.Option("manual", "--reason"),
+    value: str = typer.Argument(..., help="Address, domain, or company."),
+    kind: Optional[str] = typer.Option(None, "--kind", help="email | domain | company"),
+    reason: str = typer.Option("asked to stop", "--reason"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
 ):
-    """Suppress an address, domain, or company. Permanent and global."""
+    """Suppress someone the moment they ask. Permanent and global.
+
+    One line with nothing to remember, because honoring an opt-out is the
+    obligation and any friction here is friction on the thing that matters.
+    Kind is inferred from shape unless you say otherwise.
+    """
+    kind = kind or _infer_kind(value)
     cfg = _config(config)
     conn = open_db(db)
     with transaction(conn):
@@ -521,10 +535,11 @@ def suppress_add(
         if kind == "company":
             suppression.suppress_company(conn, value, reason,
                                          csv_path=cfg.root / "suppression.csv")
-    typer.secho("suppressed" if added else "already suppressed", fg=typer.colors.GREEN)
+    typer.secho(f"{'suppressed' if added else 'already suppressed'}: {kind} {value}",
+                fg=typer.colors.GREEN)
 
 
-@suppress_app.command("list")
+@app.command("suppressions")
 def suppress_list(db: Optional[str] = typer.Option(None, "--db")):
     conn = open_db(db)
     rows = conn.execute(

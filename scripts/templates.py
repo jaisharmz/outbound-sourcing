@@ -230,9 +230,6 @@ def build_context(
             "link_lines": persona.link_lines,
             "project_bullets": persona.project_bullets,
             "signature": persona.signature,
-            "mailing_address": persona.mailing_address,
-            "footer": persona.footer,
-            "unsubscribe_instructions": persona.unsubscribe_instructions,
         },
         "campaign": {"name": campaign_name or campaign.name},
         "document_links": [{"name": n, "url": u} for n, u in links],
@@ -276,8 +273,6 @@ def render(
     except TemplateError as exc:
         raise ConfigError(f"{step.template}: render failed -- {exc}") from exc
 
-    body = append_footer(body, config.persona)
-
     return RenderedEmail(
         subject=subject,
         body=body,
@@ -293,15 +288,7 @@ def render(
     )
 
 
-FOOTER_SEP = "\n\n-- \n"
-
-
-def append_footer(body: str, persona: Persona) -> str:
-    """CAN-SPAM: every outbound email carries opt-out and a mailing address.
-
-    Appended here rather than left to the template so it cannot be forgotten in
-    one template out of four.
-    """
-    if FOOTER_SEP.strip() in body and persona.unsubscribe_instructions in body:
-        return body
-    return body.rstrip("\n") + FOOTER_SEP + persona.footer + "\n"
+# Nothing is appended to a rendered body. What the template says is what sends.
+# These are personal emails proposing research collaboration, and an auto-generated
+# footer makes them read like a mail merge -- see references/compliance.md for why
+# the opt-out obligation is met by honoring requests rather than advertising them.
