@@ -208,3 +208,46 @@ def test_reply_to_survives_a_from_rewrite():
     mb = cfg.mailboxes.get("gmail-smtp")
     assert mb.reply_to == "jais@berkeley.edu"
     assert mb.from_.address == "jais@berkeley.edu"
+
+
+def test_the_send_gate_blocks_a_rewritten_from(tmp_path, monkeypatch):
+    """Sending messages that claim a university address and arrive from a
+    personal gmail is worse than not sending: it is the exact mismatch a
+    recipient reads as a spoof, and it cannot be taken back."""
+    from pathlib import Path
+
+    from scripts.config import Config
+    from scripts.db import open_db
+    from scripts.send_queue import gate
+
+    conn = open_db(str(tmp_path / "g.db"))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    conn.execute(
+        "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash,"
+        " to_addr, ok, headers, sent_at) VALUES ('gmail-smtp','step1_initial',"
+        " 'startup','h','x@y.test',1,?,'')",
+        ("From: Jai Sharma <jais@berkeley.edu>\n\n--- delivered ---\n"
+         "From: Jai Sharma <jaisharmaus@gmail.com>\n",))
+    conn.commit()
+    problems = gate(conn, cfg, "startup", "gmail-smtp")
+    assert any("delivered as jaisharmaus@gmail.com" in p for p in problems)
+    assert any("Send mail as" in p for p in problems)
+
+
+def test_the_gate_passes_when_from_survives(tmp_path):
+    from pathlib import Path
+
+    from scripts.config import Config
+    from scripts.db import open_db
+    from scripts.send_queue import gate
+
+    conn = open_db(str(tmp_path / "g2.db"))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    conn.execute(
+        "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash,"
+        " to_addr, ok, headers, sent_at) VALUES ('gmail-smtp','step1_initial',"
+        " 'startup','h','x@y.test',1,?,'')",
+        ("From: Jai Sharma <jais@berkeley.edu>\n\n--- delivered ---\n"
+         "From: Jai Sharma <jais@berkeley.edu>\n",))
+    conn.commit()
+    assert not any("delivered as" in p for p in gate(conn, cfg, "startup", "gmail-smtp"))

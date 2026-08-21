@@ -51,6 +51,35 @@ def gate(conn, config: Config, campaign: str, mailbox_id: str) -> list[str]:
     from .check_links import gate as link_gate
     problems.extend(link_gate(conn, config, campaign))
 
+    # The From on the delivered copy, not the one we set. Gmail rewrites From to
+    # the authenticated account unless the address is a verified "Send mail as"
+    # alias, and the rewrite is invisible from the sending side. Sending 60
+    # messages that claim a university address and arrive from a personal gmail
+    # is worse than not sending: it is the exact mismatch a recipient reads as a
+    # spoof, and it cannot be taken back.
+    from email.utils import parseaddr
+
+    mb = config.mailboxes.get(mailbox_id)
+    want_from = parseaddr(mb.from_.header())[1].lower()
+    row = conn.execute(
+        "SELECT headers FROM test_sends WHERE mailbox_id=? AND ok=1 AND headers IS NOT NULL"
+        " ORDER BY id DESC LIMIT 1", (mailbox_id,)).fetchone()
+    if row and row["headers"] and "--- delivered ---" in row["headers"]:
+        delivered = row["headers"].split("--- delivered ---", 1)[1]
+        got = ""
+        for line in delivered.splitlines():
+            if line.strip().lower().startswith("from:"):
+                got = parseaddr(line.partition(":")[2])[1].lower()
+                break
+        if got and got != want_from:
+            problems.append(
+                f"the last test send was delivered as {got}, not the configured "
+                f"{want_from}. Gmail rewrites From unless the address is a verified "
+                f"'Send mail as' alias, so every recipient would see {got}. "
+                f"Verify {want_from} in Gmail (Settings -> Accounts and Import -> "
+                f"'Send mail as'), then re-run: outbound test-email --mailbox "
+                f"{mailbox_id}")
+
     h = templates.template_hash(config, campaign)
     row = conn.execute(
         "SELECT template_hash, sent_at FROM test_sends WHERE mailbox_id=? AND ok=1"
