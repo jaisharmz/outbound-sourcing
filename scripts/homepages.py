@@ -52,6 +52,11 @@ class HomepageResult:
     status: str           # ok | js_shell | holding | dead | blocked
     text: str = ""
     detail: str = ""
+    # Raw HTML, kept because mailto: links live in markup and are erased by
+    # visible-text extraction -- the same trap as reading a page through a
+    # markdown converter and concluding the data is not there.
+    raw: str = ""
+    final_url: str = ""
 
 
 class _Text(HTMLParser):
@@ -168,6 +173,7 @@ def fetch_one(url: str, timeout: int = 20) -> HomepageResult:
                 except OSError:
                     pass
             page = raw.decode("utf-8", errors="replace")
+            final_url = resp.geturl()
     except urllib.error.HTTPError as exc:
         status = "blocked" if exc.code in (401, 403, 406, 429) else "dead"
         return HomepageResult(url, status, detail=f"HTTP {exc.code}")
@@ -178,7 +184,8 @@ def fetch_one(url: str, timeout: int = 20) -> HomepageResult:
     embedded = embedded_text(page)
     status, detail = classify(page, text, embedded)
     body = text if len(text) >= len(embedded) else embedded
-    return HomepageResult(url, status, text=body[:8000], detail=detail)
+    return HomepageResult(url, status, text=body[:8000], detail=detail,
+                          raw=page[:400_000], final_url=final_url)
 
 
 def fetch_many(rows: list[tuple[int, str]], workers: int = 8) -> dict[int, HomepageResult]:

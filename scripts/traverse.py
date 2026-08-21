@@ -9,6 +9,7 @@ execute and impossible to make without leaving a record.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,66 @@ def seed_person(conn: sqlite3.Connection, client: Client, name: str, run_id: str
     G.record_path(conn, nid, run_id, seed_node_id=None, hops=0, via="seed")
     resolve_affiliation(conn, client, nid, a, run_id)
     return nid, {"author": a}
+
+
+# Company aliases, because the string an author types is not the company's
+# trade name. Anything not listed falls back to the name itself.
+COMPANY_PATTERNS = {
+    "together ai": r"together\s*ai|together\.ai|togethercomputer",
+    "fireworks ai": r"fireworks\s*ai|fireworks\.ai",
+    "baseten": r"baseten",
+}
+
+
+def seed_company(conn: sqlite3.Connection, client: Client, company: str,
+                 run_id: str) -> tuple[int, dict]:
+    """Entry points into a company: people who named it as their own affiliation.
+
+    Company-seeded rather than person-seeded. The org becomes a node and every
+    person gets a works_at edge sourced to the paper carrying the string, so the
+    claim "works at X" has a citation rather than being an inference from a
+    LinkedIn-shaped guess.
+    """
+    pattern = COMPANY_PATTERNS.get(company.strip().lower(),
+                                   re.escape(company.strip()))
+    raw = client.affiliated_people(company, pattern)
+
+    # OpenAlex fragments one author across several ids -- Tri Dao has four, and
+    # the raw result was 83 ids for 39 people. Two identical names both claiming
+    # the same employer are the same person with near-certainty, so they are
+    # merged here. Without this the queue gets the same researcher four times,
+    # and the yield number is inflated by a factor of two.
+    people: dict[str, dict] = {}
+    for aid, rec in raw.items():
+        key = re.sub(r"\s+", " ", rec["name"].strip().lower())
+        cur = people.get(key)
+        if cur is None:
+            people[key] = {**rec, "openalex_ids": [aid]}
+            continue
+        cur["openalex_ids"].append(aid)
+        cur["papers"] += rec["papers"]
+        if rec["latest"] >= cur["latest"]:
+            cur.update(latest=rec["latest"], work_url=rec["work_url"],
+                       work_title=rec["work_title"], raw=rec["raw"])
+
+    oid = G.upsert_node(conn, "organization", company, run_id=run_id)
+
+    for key, rec in people.items():
+        ids = rec["openalex_ids"]
+        nid = G.upsert_node(conn, "person", rec["name"],
+                            external={"openalex": ids[0],
+                                      "openalex_alt": ids[1:] or None},
+                            attrs={"paper_institution": company,
+                                   "papers_with_company": rec["papers"],
+                                   "openalex_id_count": len(ids),
+                                   "latest_year": rec["latest"]},
+                            run_id=run_id)
+        G.add_edge(conn, nid, oid, "works_at", source_url=rec["work_url"],
+                   year=rec["latest"], is_current=True,
+                   quote=f"own affiliation on \"{rec['work_title']}\" "
+                         f"({rec['latest']}): {rec['raw']}")
+        G.record_path(conn, nid, run_id, seed_node_id=oid, hops=1, via="works_at")
+    return oid, people
 
 
 def expand(conn: sqlite3.Connection, client: Client, node_id: int, run_id: str, *,

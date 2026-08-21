@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
+from collections import Counter
 import sqlite3
 import sys
 from pathlib import Path
@@ -40,7 +42,8 @@ def rows(conn: sqlite3.Connection, campaign: str | None = None) -> list[sqlite3.
     return conn.execute(f"""
         SELECT c.id, c.name, c.title, c.email, c.email_basis, c.confidence,
                c.verification_status, c.personalization, c.personalization_source_url,
-               a.name AS company, a.email_pattern, a.email_pattern_samples,
+               a.name AS company, a.domain AS account_domain,
+               a.email_pattern, a.email_pattern_samples,
                a.email_pattern_confidence, a.liveness_status, a.liveness_note,
                (SELECT k.email_observed_at FROM known_people k
                  WHERE k.account_id = a.id AND k.email = c.email) AS observed_at
@@ -69,11 +72,34 @@ def risk_flags(r: sqlite3.Row) -> list[str]:
                            f"existed then, not that the person is still reachable")
         except ValueError:
             pass
+    # Traversal finds people through their published work, and researchers
+    # publish under whatever address they had at the time. An address on a
+    # different domain than the employer is the "moved on and the page did not
+    # follow" shape: it may still be deliverable, but the pitch names a company
+    # the recipient may have left.
+    acct_domain = (r["account_domain"] or "").lower()
+    email_domain = (r["email"] or "").partition("@")[2].lower()
+    if acct_domain and email_domain and not (
+            email_domain.endswith(acct_domain) or acct_domain.endswith(email_domain)):
+        # A domain built from the person's own name is their permanent address,
+        # not a stale employer -- tri@tridao.me is more durable than an
+        # @together.ai address, not less. Flagging it would train the reviewer
+        # to dismiss this flag, which exists for the genuinely stale case.
+        stem = re.sub(r"[^a-z]", "", (r["name"] or "").lower())
+        host = re.sub(r"[^a-z]", "", email_domain.rsplit(".", 1)[0])
+        personal = bool(stem) and bool(host) and (host in stem or stem in host)
+        if not personal:
+            out.append(f"address is at {email_domain} but the account is {acct_domain}: "
+                       f"the address may predate or outlive the affiliation being pitched")
     if r["verification_status"] == "catch_all":
         out.append("domain is accept-all, so verification could not confirm the mailbox")
-    if r["verification_status"] == "mx_only":
-        out.append("domain accepts mail but the mailbox was never probed: outbound port 25 "
-                   "is blocked from this network, so SMTP verification cannot run at all")
+    # mx_only is deliberately NOT a risk flag. Outbound port 25 is blocked on
+    # this network, so no address can ever reach 'valid' here -- mx_only is the
+    # ceiling, not a shortfall. Flagging every row with it would put a warning
+    # on 100% of the queue, which trains the reviewer to skip warnings and
+    # buries the flags that do carry information. The status is still a column
+    # in the CSV and stated in the brief's header, where it belongs: once, as
+    # context, rather than once per row as an alarm.
     if r["verification_status"] in ("unverified", "unknown"):
         out.append(f"verification status is {r['verification_status']}; this row should not send")
     if not r["personalization"]:
@@ -100,6 +126,20 @@ def export(conn, config, out_path: Path, campaign: str | None = None) -> tuple[i
             ])
 
     lines = [f"# Review — {len(data)} contacts awaiting approval", ""]
+
+    # Verification context, stated once. See risk_flags for why mx_only is not
+    # a per-row flag.
+    statuses = Counter(r["verification_status"] for r in data)
+    if statuses:
+        lines.append("Verification: " + ", ".join(
+            f"{n} {s}" for s, n in statuses.most_common()) + ".")
+        if statuses.get("mx_only"):
+            lines.append(
+                "> `mx_only` is the best result obtainable on this network: outbound port 25 "
+                "is blocked, so the SMTP mailbox probe cannot run for any address. The domain "
+                "was confirmed to accept mail. It is not a weaker row than a `valid` one here "
+                "-- there are no `valid` ones to compare against.")
+        lines.append("")
     lines.append(f"Edit the `approved` column in `{csv_path.name}` and re-import. "
                  f"Only approved rows queue.")
     lines.append("")

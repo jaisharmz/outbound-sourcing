@@ -165,3 +165,41 @@ def test_per_lab_cap_counts_contacts(conn):
     assert lab_is_full(conn, "Some Lab", 2)
     assert not lab_is_full(conn, "Some Lab", 3)
     assert not lab_is_full(conn, "Other Lab", 2)
+
+
+# ------------------------------------------------------------ review flags
+
+
+def test_a_personal_domain_is_not_flagged_as_stale(conn):
+    """tri@tridao.me is more durable than an @together.ai address, not less.
+    Flagging it trains the reviewer to dismiss the flag that catches the real
+    case -- an address left behind at a previous employer."""
+    from scripts.review import risk_flags
+
+    def row(**kw):
+        base = {"email_basis": "observed", "email_pattern_samples": 0,
+                "email_pattern_confidence": 0, "observed_at": None,
+                "verification_status": "mx_only", "personalization": "x",
+                "personalization_source_url": "https://x.test", "liveness_status": None,
+                "name": "Tri Dao", "email": "tri@tridao.me",
+                "account_domain": "together.ai"}
+        base.update(kw)
+        return base
+
+    assert not any("predate" in f for f in risk_flags(row()))
+    stale = risk_flags(row(name="Shang Zhu", email="shangzhu@umich.edu"))
+    assert any("umich.edu" in f and "together.ai" in f for f in stale)
+
+
+def test_mx_only_is_not_a_risk_flag(conn):
+    """Port 25 is blocked here, so mx_only is the ceiling. A flag on 100% of
+    rows carries no information and buries the ones that do."""
+    from scripts.review import risk_flags
+
+    flags = risk_flags({"email_basis": "observed", "email_pattern_samples": 0,
+                        "email_pattern_confidence": 0, "observed_at": None,
+                        "verification_status": "mx_only", "personalization": "x",
+                        "personalization_source_url": "https://x.test",
+                        "liveness_status": None, "name": "A B",
+                        "email": "a@b.test", "account_domain": "b.test"})
+    assert not any("mx_only" in f or "port 25" in f for f in flags)

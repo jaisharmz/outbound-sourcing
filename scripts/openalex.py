@@ -84,24 +84,41 @@ class Client:
     # which is both faster and the courteous thing to do.
     mailto: str | None = None
     calls: int = 0
+    throttled: int = 0
     delay: float = 0.12
 
     def get(self, path: str, **params) -> dict:
+        """One request, with backoff on 429.
+
+        A traversal is hundreds of calls and OpenAlex will throttle partway
+        through. Failing the whole run at call 300 loses everything already
+        fetched, so a rate limit is a wait rather than an error -- it is the one
+        failure that is always transient.
+        """
         if self.mailto:
             params["mailto"] = self.mailto
         url = f"{API}{path}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={"User-Agent": "outbound-sourcing/0.1"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                self.calls += 1
-                time.sleep(self.delay)
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429:
-                raise OpenAlexError("rate limited by OpenAlex; slow down or set mailto")
-            raise OpenAlexError(f"HTTP {exc.code} for {path}") from exc
-        except Exception as exc:
-            raise OpenAlexError(f"{type(exc).__name__} for {path}") from exc
+        backoff = 2.0
+        for attempt in range(6):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    self.calls += 1
+                    time.sleep(self.delay)
+                    return json.loads(resp.read())
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < 5:
+                    self.throttled += 1
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                if exc.code == 429:
+                    raise OpenAlexError(
+                        f"rate limited by OpenAlex after {attempt + 1} attempts; "
+                        f"{self.calls} calls made this run")
+                raise OpenAlexError(f"HTTP {exc.code} for {path}") from exc
+            except Exception as exc:
+                raise OpenAlexError(f"{type(exc).__name__} for {path}") from exc
 
     # ------------------------------------------------------------- authors
 
@@ -175,6 +192,55 @@ class Client:
                         if t.get("display_name")],
             ))
         return out
+
+
+    def affiliated_people(self, company: str, pattern: str,
+                          per_page: int = 200) -> dict[str, dict]:
+        """People whose own affiliation string on a paper names this company.
+
+        OpenAlex has no institution record for most startups -- searching
+        /institutions for "Together AI", "Fireworks AI" or "Baseten" returns
+        zero. The affiliation still exists, as the raw string an author typed on
+        their own paper, so that is what this reads. It is first-party: the
+        person wrote it about themselves, and the paper is the citation.
+
+        The regex re-check matters. The API's search is fuzzy and matches a
+        paper if any author's string is close enough; without re-testing each
+        authorship the result is every coauthor of everyone at the company.
+        """
+        import re as _re
+
+        rx = _re.compile(pattern, _re.I)
+        found: dict[str, dict] = {}
+        cursor = "*"
+        while cursor:
+            d = self.get("/works",
+                         filter=f"raw_affiliation_strings.search:{company}",
+                         per_page=per_page, cursor=cursor,
+                         select="id,display_name,publication_year,authorships")
+            for w in d.get("results") or []:
+                for a in w.get("authorships") or []:
+                    raws = " ".join(a.get("raw_affiliation_strings") or [])
+                    if not rx.search(raws):
+                        continue
+                    au = a.get("author") or {}
+                    aid = (au.get("id") or "").rsplit("/", 1)[-1]
+                    name = au.get("display_name")
+                    if not name or not aid:
+                        continue
+                    rec = found.setdefault(aid, {
+                        "name": name, "papers": 0, "latest": 0,
+                        "work_url": w.get("id"), "work_title": w.get("title"),
+                        "raw": raws[:200]})
+                    rec["papers"] += 1
+                    year = w.get("publication_year") or 0
+                    if year >= rec["latest"]:
+                        rec.update(latest=year, work_url=w.get("id"),
+                                   work_title=w.get("title"), raw=raws[:200])
+            cursor = (d.get("meta") or {}).get("next_cursor")
+            if not d.get("results"):
+                break
+        return found
 
 
 def coauthor_counts(works: list[Work], exclude_id: str) -> dict[str, dict]:
