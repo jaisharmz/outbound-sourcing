@@ -28,7 +28,7 @@ from .normalize import (
     normalize_person,
     registrable_domain,
 )
-from . import exclusions
+from . import exclusions, seniority
 from .suppression import is_suppressed, lab_is_full, load_set
 
 
@@ -224,7 +224,12 @@ def _ingest_company(
     account_id = upsert_account(conn, cf, source, str(path))
     per_company = 0
 
-    for c in cf.candidates:
+    # Best-first, so when the per-company cap binds it drops the people least
+    # likely to reply rather than whoever happened to be last in the file. The
+    # ordering is the inverse of an org chart on purpose -- see scripts/seniority.
+    ordered = sorted(cf.candidates,
+                     key=lambda x: (seniority.rank(x.title), -(x.confidence or 0)))
+    for c in ordered:
         email = normalize_email(c.email)
 
         lab = getattr(c, "lab", None)
@@ -257,7 +262,9 @@ def _ingest_company(
             report.dropped_icp.append(f"{email} ({reason})")
             continue
         if per_company >= config.icp.max_contacts_per_company:
-            report.dropped_icp.append(f"{email} (over max_contacts_per_company)")
+            report.dropped_icp.append(
+                f"{email} (over max_contacts_per_company; "
+                f"{seniority.name(c.title)} ranked last)")
             continue
 
         seen_people[person_key] = email

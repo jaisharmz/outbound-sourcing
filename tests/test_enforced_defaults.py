@@ -112,3 +112,33 @@ def test_resolve_and_ingest_agree_on_the_account_key(tmp_path):
 
     assert upsert_account(conn, CF(), "test", "ref") == 1
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1
+
+
+def test_leadership_ranks_below_plain_ic_titles():
+    """Inverse of an org chart, deliberately. A co-founder is the profile least
+    likely to reply: full inbox, and an outside collaboration routes through a
+    process rather than being a personal yes."""
+    from scripts import seniority
+
+    assert seniority.rank("Research Scientist") < seniority.rank("Principal Engineer")
+    assert seniority.rank("Principal Engineer") < seniority.rank("Co-founder")
+    assert seniority.rank("Member of Technical Staff") == seniority.IC_RESEARCH
+    for t in ("Co-founder and Chief Scientist", "Head of Research", "VP of Engineering",
+              "Director of ML", "CTO"):
+        assert seniority.is_leadership(t), t
+    for t in ("AI Researcher", "Applied Scientist", "Research Engineer"):
+        assert not seniority.is_leadership(t), t
+
+
+def test_leadership_is_flagged_not_excluded():
+    """'Don't hard-exclude them' -- they must still be reachable, just deliberate."""
+    from scripts.review import risk_flags
+
+    row = {"email_basis": "observed", "email_pattern_samples": 0,
+           "email_pattern_confidence": 0, "observed_at": None,
+           "verification_status": "mx_only", "personalization": "x",
+           "personalization_source_url": "https://x.test", "liveness_status": None,
+           "name": "A Founder", "email": "a@b.test", "account_domain": "b.test",
+           "title": "Co-founder and Chief Scientist"}
+    assert any("least likely to reply" in f for f in risk_flags(row))
+    assert not risk_flags({**row, "title": "Research Scientist", "name": "B IC"})

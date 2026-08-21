@@ -182,7 +182,7 @@ def test_a_personal_domain_is_not_flagged_as_stale(conn):
                 "verification_status": "mx_only", "personalization": "x",
                 "personalization_source_url": "https://x.test", "liveness_status": None,
                 "name": "Tri Dao", "email": "tri@tridao.me",
-                "account_domain": "together.ai"}
+                "title": "Research Scientist", "account_domain": "together.ai"}
         base.update(kw)
         return base
 
@@ -201,6 +201,7 @@ def test_mx_only_is_not_a_risk_flag(conn):
                         "verification_status": "mx_only", "personalization": "x",
                         "personalization_source_url": "https://x.test",
                         "liveness_status": None, "name": "A B",
+                        "title": "Research Scientist",
                         "email": "a@b.test", "account_domain": "b.test"})
     assert not any("mx_only" in f or "port 25" in f for f in flags)
 

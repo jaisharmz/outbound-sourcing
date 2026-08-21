@@ -55,7 +55,51 @@ COMPANY_PATTERNS = {
     "together ai": r"together\s*ai|together\.ai|togethercomputer",
     "fireworks ai": r"fireworks\s*ai|fireworks\.ai",
     "baseten": r"baseten",
+    "groq": r"\bgroq\b",
+    "etched": r"\betched\b",
+    "cursor": r"\bcursor\b|\banysphere\b",
 }
+
+# Different companies that share a name. "Cursor Insight Ltd." is a London
+# handwriting-analytics firm with a real, current, correctly-formatted
+# affiliation line -- it passed the founding-year and prose guards cleanly and
+# produced eight confident false positives. No heuristic separates it from
+# Anysphere's Cursor; only knowing they are different companies does.
+EXCLUDE_PATTERNS = {
+    "cursor": r"cursor\s+insight",
+}
+
+# Founding years. A company cannot have employed anyone before it existed, and
+# this is the cheapest guard against a name that is also an ordinary English
+# word: "Etched" matched the verb in semiconductor abstracts back to 1991, and
+# "Cursor" matched an unrelated Chilean "Cursor Ltd." and Spanish ecology prose.
+FOUNDED = {
+    "together ai": 2022, "fireworks ai": 2022, "baseten": 2019,
+    "groq": 2016, "etched": 2022, "cursor": 2022,
+}
+
+# Prose tells. A real affiliation string is a short comma-delimited address
+# ("Groq, Inc, Palo Alto, CA, USA"); a biography is a sentence. If the segment
+# carrying the match reads like a sentence, the match is a word in prose rather
+# than an employer.
+PROSE_TELLS = (" is ", " was ", " received ", " graduated ", " served ",
+               " joined ", " prior to ", " degree ", " his ", " her ", " they ")
+
+
+def plausible_affiliation(raw: str, pattern: str) -> bool:
+    """Does the matched text look like an employer, or like prose using the word?"""
+    rx = re.compile(pattern, re.I)
+    for segment in re.split(r"[;\n]|\s{2,}", raw):
+        if not rx.search(segment):
+            continue
+        low = segment.lower()
+        if any(t in low for t in PROSE_TELLS):
+            continue
+        # Real affiliation lines are short. A 200-character match is a paragraph.
+        if len(segment) > 140:
+            continue
+        return True
+    return False
 
 
 def seed_company(conn: sqlite3.Connection, client: Client, company: str,
@@ -67,9 +111,30 @@ def seed_company(conn: sqlite3.Connection, client: Client, company: str,
     claim "works at X" has a citation rather than being an inference from a
     LinkedIn-shaped guess.
     """
-    pattern = COMPANY_PATTERNS.get(company.strip().lower(),
-                                   re.escape(company.strip()))
-    raw = client.affiliated_people(company, pattern)
+    key_c = company.strip().lower()
+    pattern = COMPANY_PATTERNS.get(key_c, re.escape(company.strip()))
+    founded = FOUNDED.get(key_c)
+    raw_all = client.affiliated_people(company, pattern)
+
+    # Two cheap guards before anything becomes a node, because a company name
+    # that is also an ordinary English word produces confident-looking garbage.
+    # Etched returned seven "employees", the oldest from 1991, all of them the
+    # verb in a semiconductor abstract. Cursor returned an unrelated Chilean
+    # "Cursor Ltd." and Spanish ecology prose.
+    exclude = EXCLUDE_PATTERNS.get(key_c)
+    exclude_rx = re.compile(exclude, re.I) if exclude else None
+    people_raw, rejected = {}, 0
+    for aid, rec in raw_all.items():
+        if exclude_rx and exclude_rx.search(rec["raw"]):
+            rejected += 1
+            continue
+        if founded and (rec["latest"] or 0) < founded:
+            rejected += 1
+            continue
+        if not plausible_affiliation(rec["raw"], pattern):
+            rejected += 1
+            continue
+        people_raw[aid] = rec
 
     # OpenAlex fragments one author across several ids -- Tri Dao has four, and
     # the raw result was 83 ids for 39 people. Two identical names both claiming
@@ -77,7 +142,7 @@ def seed_company(conn: sqlite3.Connection, client: Client, company: str,
     # merged here. Without this the queue gets the same researcher four times,
     # and the yield number is inflated by a factor of two.
     people: dict[str, dict] = {}
-    for aid, rec in raw.items():
+    for aid, rec in people_raw.items():
         key = re.sub(r"\s+", " ", rec["name"].strip().lower())
         cur = people.get(key)
         if cur is None:
@@ -88,6 +153,12 @@ def seed_company(conn: sqlite3.Connection, client: Client, company: str,
         if rec["latest"] >= cur["latest"]:
             cur.update(latest=rec["latest"], work_url=rec["work_url"],
                        work_title=rec["work_title"], raw=rec["raw"])
+
+    if rejected:
+        G.log_expansion(conn, run_id, None, "filter",
+                      f"dropped {rejected} affiliation match(es) for {company!r}: "
+                      f"before founding year {founded} or prose rather than an "
+                      f"affiliation line")
 
     oid = G.upsert_node(conn, "organization", company, run_id=run_id)
 

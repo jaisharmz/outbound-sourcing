@@ -125,3 +125,13 @@ def test_spam_traps_are_never_harvested():
     found = emails_on("", "reach me at hate@spam.net or real@together.ai")
     assert found == ["real@together.ai"]
     assert emails_on("", "noreply@x.test and postmaster@x.test") == []
+
+
+def test_role_addresses_are_not_people():
+    """The pitch opens "Hello <first name>" and quotes the recipient's own work,
+    so a shared inbox is the wrong destination even when it is deliverable.
+    Found live on a Groq engineer's site as web@zvfh.dev."""
+    from scripts.person_pages import emails_on
+
+    assert emails_on("", "web@zvfh.dev or ashay@zvfh.dev") == ["ashay@zvfh.dev"]
+    assert emails_on("", "info@lab.edu and careers@lab.edu") == []

@@ -47,6 +47,14 @@ TRAPS = ("spam.net", "spam.com", "nospam", "no-spam", "spamtrap", "@spam.",
          "abuse@", "postmaster@", "honeypot", "donotreply", "do-not-reply",
          "noreply", "no-reply", "hate@", "spamgourmet", "trashmail", "mailinator")
 
+# Role addresses reach a function, not a person. The pitch opens "Hello <first
+# name>" and quotes the recipient's own work, so a shared inbox is the wrong
+# destination even when it is deliverable -- found on a Groq engineer's site as
+# web@zvfh.dev, which would have been sent a personally-addressed email.
+ROLE_PREFIXES = ("web@", "info@", "contact@", "hello@", "admin@", "support@",
+                 "sales@", "team@", "office@", "mail@", "help@", "press@",
+                 "careers@", "jobs@", "hi@", "enquiries@", "inquiries@")
+
 
 @dataclass
 class PersonPage:
@@ -141,6 +149,8 @@ def emails_on(page: str, text: str) -> list[str]:
         if e in seen or any(j in e for j in JUNK) or len(e) > 60:
             continue
         if any(t in e for t in TRAPS):
+            continue
+        if e.startswith(ROLE_PREFIXES):
             continue
         seen.add(e)
         out.append(e)

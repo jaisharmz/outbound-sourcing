@@ -114,10 +114,10 @@ class ICP(Strict):
     # are the kinds that are never targets whatever the campaign; everything else
     # goes to triage rather than being dropped.
     auto_drop_reason_patterns: list[str] = Field(default_factory=list)
-    max_contacts_per_company: int = 3
+    max_contacts_per_company: int = 8
     # Traversal surfaces a research group together, and four people from one lab
     # will compare notes. Capped separately from company.
-    max_contacts_per_lab: int = 2
+    max_contacts_per_lab: int = 6
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 

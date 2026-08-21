@@ -14,6 +14,8 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+
+from . import seniority
 from collections import Counter
 import sqlite3
 import sys
@@ -25,7 +27,7 @@ from .errors import ConfigError
 from .review_select import choose
 
 COLUMNS = [
-    "contact_id", "approved", "name", "title", "company", "email",
+    "contact_id", "approved", "name", "title", "seniority", "company", "email",
     "email_basis", "pattern", "pattern_samples", "pattern_confidence",
     "address_age", "verification", "confidence", "liveness",
     "personalization", "personalization_source",
@@ -48,12 +50,30 @@ def rows(conn: sqlite3.Connection, campaign: str | None = None) -> list[sqlite3.
                (SELECT k.email_observed_at FROM known_people k
                  WHERE k.account_id = a.id AND k.email = c.email) AS observed_at
           FROM contacts c JOIN accounts a ON a.id = c.account_id
-         WHERE {' AND '.join(where)} ORDER BY a.name, c.name""", tuple(params)).fetchall()
+         WHERE {' AND '.join(where)}""", tuple(params)).fetchall()
+
+
+def _order(r: sqlite3.Row) -> tuple:
+    """Best-first: IC researchers before senior ICs before leadership.
+
+    The reviewer's attention is finite and goes to the top of the list, so the
+    people most likely to reply belong there. Leadership sorts last rather than
+    being hidden -- a company that yields only a founder still deserves a
+    considered decision.
+    """
+    return (seniority.rank(r["title"]), (r["company"] or "").lower(),
+            -(r["confidence"] or 0), (r["name"] or "").lower())
 
 
 def risk_flags(r: sqlite3.Row) -> list[str]:
     """What a reviewer should look at twice on this row."""
     out = []
+    # Not a defect in the record -- a judgement the operator wants to make
+    # deliberately rather than by default. A founder or exec is the profile
+    # least likely to reply, so approving one should be a decision.
+    if seniority.is_leadership(r["title"]):
+        out.append(f"{r['title']}: {seniority.explain(r['title'])}. "
+                   f"Approve only if this company yields nobody more hands-on")
     if r["email_basis"] == "inferred_from_pattern":
         n = r["email_pattern_samples"] or 0
         conf = r["email_pattern_confidence"] or 0
@@ -110,14 +130,15 @@ def risk_flags(r: sqlite3.Row) -> list[str]:
 
 
 def export(conn, config, out_path: Path, campaign: str | None = None) -> tuple[int, int]:
-    data = rows(conn, campaign)
+    data = sorted(rows(conn, campaign), key=_order)
     csv_path = out_path.with_suffix(".csv")
     with csv_path.open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(COLUMNS)
         for r in data:
             w.writerow([
-                r["id"], "", r["name"], r["title"], r["company"], r["email"],
+                r["id"], "", r["name"], r["title"], seniority.name(r["title"]),
+                r["company"], r["email"],
                 r["email_basis"], r["email_pattern"], r["email_pattern_samples"],
                 f"{r['email_pattern_confidence']:.2f}" if r["email_pattern_confidence"] else "",
                 (r["observed_at"] or "")[:10], r["verification_status"], r["confidence"],
