@@ -884,6 +884,35 @@ def suggest_cmd(
                    f"--domain {sug.domain or '<domain>'}")
 
 
+@app.command("ask")
+def ask_cmd(
+    kind: str = typer.Argument(..., help="company | industry | senior | ambiguous"),
+    subject: str = typer.Option(..., "--subject", help="company, field or person"),
+    context: str = typer.Option("", "--context", help="where it came up"),
+    found: int = typer.Option(0, "--found", help="how many people"),
+    title: str = typer.Option("", "--title"),
+    detail: str = typer.Option("", "--detail", help="for `ambiguous`"),
+):
+    """Render one of the four questions the run is allowed to stop for.
+
+    Rendered here rather than formatted from memory each time. The design is the
+    point -- one line of context, one question, two or three one-word answers --
+    and a question hand-written twelve different ways stops being answerable at a
+    glance, which was the whole reason for the shape.
+    """
+    from . import ask as A
+
+    q = {
+        "company": lambda: A.company_found(found, subject, context),
+        "industry": lambda: A.industry_adjacent(subject, context),
+        "senior": lambda: A.senior_person(subject, title, context),
+        "ambiguous": lambda: A.ambiguous_claim(subject, detail),
+    }.get(kind)
+    if not q:
+        raise typer.BadParameter("kind must be company, industry, senior or ambiguous")
+    typer.echo(q().render())
+
+
 @app.command("doctor")
 def doctor_cmd(
     config: Optional[str] = typer.Option(None, "--config"),
@@ -981,6 +1010,16 @@ def investigate_cmd(
         typer.echo("    These are marked inferred_from_pattern at ingest and flagged "
                    "at review.")
     typer.echo(f"  stopped: {inv.stopped_because}")
+
+    from . import ask as A
+    read_first = []
+    if guessed:
+        read_first.append(f"{len(guessed)} address(es) inferred from the domain "
+                          f"convention, never observed")
+    typer.secho("\n" + A.run_summary(
+        drafted=[(n, company) for n in done],
+        skipped=[(n, "address inferred, not observed") for n in guessed],
+        read_first=read_first), fg=None)
     log = inv.write_log(run_id)
     typer.echo(f"  log: {log}")
     if json_out:

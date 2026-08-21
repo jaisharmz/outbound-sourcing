@@ -201,6 +201,13 @@ class Campaign(Strict):
     # requests; hardcoding one means every installed copy identifies itself as
     # the person who wrote the tool.
     contact_email: str = ""
+    # How far a run may wander from what was named.
+    #   ask     stop for the four judgment shapes (default)
+    #   auto    expand freely, report every decision at the end
+    #   strict  never expand beyond the companies named on the command line
+    # The run summary lists expansion decisions under all three, so `auto` is
+    # unattended rather than invisible.
+    autonomy: str = "ask"
     attachments_root: str
     # Wire size, not disk size: base64 inflates by 4/3 and that is what a
     # gateway measures. Many corporate gateways reject inbound above 10 MB and

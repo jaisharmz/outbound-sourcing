@@ -41,6 +41,87 @@ outbound run log --searches <n> --fetches <n>
 outbound run report
 ```
 
+## Stay out of the operator's way
+
+The goal is drafts sitting in their Gmail. They open the inbox and send each one
+by hand; nothing auto-sends.
+
+**Default to acting.** Search, follow leads, resolve addresses, filter, render,
+draft. Do not narrate mechanics, do not report each step, and do not ask
+permission for anything already implied by what they asked for. "Shall I check
+their homepage?" is not a question, it is the job.
+
+**Interrupt for four shapes only**, each a judgment they would want and you
+cannot make honestly:
+
+```
+Found 4 people at Modal Labs while searching Baseten.
+Include Modal Labs?
+  y / n / always
+```
+```
+Fireworks AI keeps turning up speculative decoding work.
+Explore speculative decoding too?
+  y / n / always
+```
+```
+Priya Raghavan — VP Engineering at Fireworks. Senior.
+Draft anyway?
+  y / n / never
+```
+```
+Kaitlyn Zhou: page says 'Invited Talk at TogetherAI', not employment
+Include the claim?
+  y / n
+```
+
+Render them with `outbound ask` rather than formatting by hand -- the shape is
+the point, and a question written twelve different ways stops being answerable
+at a glance:
+
+```
+outbound ask company   --subject "Modal Labs" --context "Baseten" --found 4
+outbound ask industry  --subject "speculative decoding" --context "Fireworks AI"
+outbound ask senior    --subject "Priya Raghavan" --title "VP Engineering" --context "Fireworks"
+outbound ask ambiguous --subject "Kaitlyn Zhou" --detail "page shows a talk, not employment"
+```
+
+One line of context, one question, two or three one-word answers. Never a
+paragraph, never three options with explanations, never a question whose answer
+is already implied. `always` and `never` settle that class for the rest of the
+run — ask the same thing twelve times and the twelfth answer is not a considered
+one.
+
+`campaign.autonomy` sets the default: `ask`, `auto` (expand freely), or `strict`
+(never leave the named companies). Seniority and ambiguity are asked under every
+setting — they are judgments about a specific person and a specific claim, not
+about scope. Under all three, the run summary lists every expansion decision, so
+`auto` is unattended rather than invisible.
+
+## End with one clear statement
+
+```
+5 drafts in your Gmail, from 3 companies:
+     3  Baseten
+     1  Fireworks AI
+     1  Modal Labs
+
+4 skipped:
+     1  on the founders page
+     1  senior; you answered never
+     1  page shows a talk, not employment
+     1  namesake risk: page never mentions Baseten
+
+Read these before sending:
+    - 3 contacts have title_status: unknown
+    - Amy Hu's address is inferred from the domain pattern, not observed
+
+Open Gmail, read them, send by hand. Then: outbound mark-sent --all
+```
+
+Counts, companies, what was skipped and why, what to look at. Not a log — the
+step-by-step belongs in `state/investigations/`.
+
 ## Narrate
 
 State each search before you run it and what came back after. When something
