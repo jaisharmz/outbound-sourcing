@@ -536,6 +536,303 @@ def exclusions_cmd(
     typer.echo(f"\ntotal excluded: {len(rows)}")
 
 
+# ------------------------------------------------------- /outbound support
+#
+# These exist so the slash command's agentic half never has to guess at
+# mechanism. Each one is deterministic, prints what it did, and meters itself.
+
+
+run_app = typer.Typer(add_completion=False, help="Per-run cost accounting.")
+app.add_typer(run_app, name="run")
+
+
+@run_app.command("start")
+def run_start(target: str = typer.Argument(...),
+              kind: str = typer.Option("company", "--kind")):
+    """Open a run file. Export OUTBOUND_RUN_ID so later steps accumulate into it."""
+    from . import meter
+    import re as _re, time as _time
+
+    slug = _re.sub(r"[^a-z0-9]+", "-", target.lower()).strip("-")
+    run_id = f"{slug}-{int(_time.time())}"
+    meter.start(run_id, target, kind)
+    typer.echo(run_id)
+
+
+@run_app.command("log")
+def run_log(run_id: Optional[str] = typer.Option(None, "--run"),
+            searches: int = typer.Option(0, "--searches"),
+            fetches: int = typer.Option(0, "--fetches"),
+            label: str = typer.Option("agent", "--label")):
+    """Record agent-side WebSearch/WebFetch counts, which nothing else can see."""
+    from . import meter
+    import os
+
+    rid = run_id or os.environ.get("OUTBOUND_RUN_ID")
+    if not rid:
+        raise typer.BadParameter("no run id; pass --run or set OUTBOUND_RUN_ID")
+    if searches:
+        meter.bump("agent_searches", searches)
+    if fetches:
+        meter.bump("agent_fetches", fetches)
+    meter.flush(rid, label)
+    typer.echo(f"logged to {rid}")
+
+
+@run_app.command("report")
+def run_report(run_id: Optional[str] = typer.Option(None, "--run")):
+    """What this run cost: calls, fetches, wall time."""
+    from . import meter
+    import os
+
+    rid = run_id or os.environ.get("OUTBOUND_RUN_ID")
+    data = meter.report(rid)
+    t = data["totals"]
+    typer.secho(f"\n=== cost: {data.get('target', rid)} ===", fg=typer.colors.CYAN)
+    for k in ("agent_searches", "agent_fetches", "http_fetches", "openalex_calls",
+              "openalex_throttled", "smtp_probes"):
+        if t.get(k):
+            typer.echo(f"  {k:<20} {int(t[k])}")
+    typer.echo(f"  {'wall clock':<20} {data['wall_s']}s"
+               f"   ({round(data['wall_s'] / 60, 1)} min)")
+    typer.echo(f"  {'steps':<20} {len(data['steps'])}")
+
+
+@app.command("company-resolve")
+def company_resolve(
+    name: str = typer.Argument(...),
+    domain: Optional[str] = typer.Option(None, "--domain"),
+    tier: Optional[str] = typer.Option(None, "--tier"),
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    ai_depth: Optional[str] = typer.Option(None, "--ai-depth", help="builds | applies"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Resolve one company: domain, homepage liveness, suppression, exclusions.
+
+    Step 1 of a run. Fails loudly rather than quietly proceeding on a company
+    that is suppressed or that the operator already knows.
+    """
+    from . import exclusions as EX
+    from . import meter
+    from .homepages import fetch_one
+
+    cfg = _config(config)
+    conn = open_db(db)
+    typer.secho(f"\n=== resolve: {name} ===", fg=typer.colors.CYAN)
+
+    if reason := suppression.is_suppressed(conn, f"x@{domain or 'unknown.invalid'}", name):
+        typer.secho(f"  SUPPRESSED: {reason}", fg=typer.colors.RED)
+        typer.secho("  stop here. Nothing from this company may enter the queue.",
+                    fg=typer.colors.RED)
+        raise typer.Exit(2)
+    if hit := EX.check(conn, cfg, name, company=name):
+        typer.secho(f"  PERSONALLY EXCLUDED: {hit['reason']}", fg=typer.colors.RED)
+        raise typer.Exit(2)
+    typer.echo("  suppression: clear")
+    typer.echo("  personal exclusions: clear")
+
+    row = conn.execute("SELECT id, name, domain, liveness_status, liveness_note, status"
+                       " FROM accounts WHERE LOWER(name) = ?", (name.lower(),)).fetchone()
+    if row:
+        typer.echo(f"  known account id={row['id']} domain={row['domain'] or '(none)'} "
+                   f"status={row['status']} liveness={row['liveness_status'] or '(unchecked)'}")
+        domain = domain or row["domain"]
+    else:
+        typer.echo("  not in accounts yet (new company)")
+
+    if domain:
+        r = fetch_one(f"https://{domain}/")
+        typer.echo(f"  homepage https://{domain}/ -> {r.status} ({r.detail})")
+        if r.status == "ok":
+            typer.echo(f"    {' '.join(r.text.split())[:160]}")
+    else:
+        typer.secho("  no domain known. Find it before resolving emails.",
+                    fg=typer.colors.YELLOW)
+
+    # Routing. A company discovered fresh has never been through the classifier,
+    # so without this its contacts land with campaign NULL: invisible to a
+    # campaign-scoped review export and unable to ever send. They look ingested
+    # and are unreachable, which is the worst shape of failure -- nothing errors.
+    campaign = campaign or (cfg.campaigns.for_tier(tier) if tier else None)
+    if campaign:
+        cfg.campaigns.get(campaign)          # raises on an unknown name
+    with transaction(conn):
+        if row:
+            conn.execute("UPDATE accounts SET domain=COALESCE(?, domain),"
+                         " tier=COALESCE(?, tier), campaign=COALESCE(?, campaign),"
+                         " ai_depth=COALESCE(?, ai_depth), updated_at=? WHERE id=?",
+                         (domain, tier, campaign, ai_depth, utcnow(), row["id"]))
+            aid = row["id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO accounts (name, name_normalized, domain, source, status,"
+                " tier, campaign, ai_depth, created_at, updated_at)"
+                " VALUES (?,?,?,?,'new',?,?,?,?,?)",
+                (name, registrable_domain(name.lower()) or name.lower(), domain,
+                 "outbound-run", tier, campaign, ai_depth, utcnow(), utcnow()))
+            aid = cur.lastrowid
+    if campaign:
+        typer.echo(f"  routed: account {aid} -> tier={tier} campaign={campaign} "
+                   f"ai_depth={ai_depth or '(unset)'}")
+    else:
+        typer.secho(f"  account {aid} has NO campaign. Its contacts will ingest and then "
+                    f"be unroutable -- they will not appear in a campaign review export "
+                    f"and cannot send. Pass --tier or --campaign.", fg=typer.colors.RED)
+    meter.flush(label="company-resolve")
+
+
+@app.command("person-pages")
+def person_pages_cmd(
+    names: list[str] = typer.Argument(...),
+    url: Optional[str] = typer.Option(None, "--url", help="try this URL first"),
+    company: Optional[str] = typer.Option(None, "--company",
+                                          help="require the page to mention this"),
+    json_out: Optional[str] = typer.Option(None, "--json"),
+):
+    """Probe personal pages for addresses. Observed only -- never a guess.
+
+    Step 4's first pass. Every address printed was read off a page, and the
+    page it came from is printed next to it.
+    """
+    from . import meter
+    from .person_pages import find
+    import concurrent.futures
+
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        for r in ex.map(lambda n: find(n, [url] if url else None, company), names):
+            results.append(r)
+            mark = {"found": "FOUND", "namesake_risk": "?????", "no_email": "page ",
+                    "not_found": "  -  "}.get(r.status, r.status)
+            colour = {"found": typer.colors.GREEN,
+                      "namesake_risk": typer.colors.YELLOW}.get(r.status)
+            typer.secho(f"  {mark} {r.name[:26]:<28} {(r.url or '')[:44]:<46}"
+                        f"{', '.join(r.emails[:2])}", fg=colour)
+    found = sum(1 for r in results if r.status == "found")
+    risky = sum(1 for r in results if r.status == "namesake_risk")
+    pages = sum(1 for r in results if r.status == "no_email")
+    typer.echo(f"\n  {len(results)} probed: {found} with an address, "
+               f"{pages} page but no address, "
+               f"{len(results) - found - pages - risky} no page found")
+    if risky:
+        typer.secho(f"  {risky} address(es) found on a page that never mentions "
+                    f"{company!r}. Treated as a namesake, not a contact. Confirm by hand "
+                    f"or discard.", fg=typer.colors.YELLOW)
+    if json_out:
+        Path(json_out).write_text(json.dumps(
+            [{"name": r.name, "status": r.status, "url": r.url, "emails": r.emails,
+              "corroborated": r.corroborated, "tried": r.tried}
+             for r in results], indent=2))
+        typer.echo(f"  wrote {json_out}")
+    meter.flush(label="person-pages")
+
+
+@app.command("candidates-from-pages")
+def candidates_from_pages(
+    pages_json: str = typer.Option(..., "--json", help="output of person-pages --json"),
+    company: str = typer.Option(..., "--company"),
+    domain: str = typer.Option(..., "--domain"),
+    out: str = typer.Option(..., "--out"),
+    prefer_domain: bool = typer.Option(True, "--prefer-domain/--first-address"),
+):
+    """Turn probe results into a candidate file with the address evidence filled in.
+
+    The evidence contract requires an entry that grounds the address itself, and
+    the probe already knows which page each address was read off. Writing that
+    by hand is a step that can be forgotten -- and was, on the first attempt, by
+    the agent that had just run the probe. Generated here instead.
+
+    Title and personalization are deliberately left blank: those are judgment,
+    and a machine-filled placeholder would pass the validator while saying
+    nothing. Fill them in before ingesting.
+    """
+    data = json.loads(Path(pages_json).read_text())
+    out_rows = []
+    for r in data:
+        if r["status"] != "found" or not r["emails"]:
+            continue
+        emails = r["emails"]
+        if prefer_domain:
+            emails = sorted(emails, key=lambda e: (domain not in e.partition("@")[2],))
+        email = emails[0]
+        out_rows.append({
+            "name": r["name"],
+            "title": "TODO",
+            "company": company,
+            "email": email,
+            "email_basis": "observed",
+            "confidence": 0.9 if domain in email else 0.65,
+            "country": "US",
+            "personalization": None,
+            "evidence": [{
+                "claim": f"{r['name']}'s address {email} is published on their own page",
+                "url": r["url"],
+                "quote": email,
+                "retrieved_at": utcnow(),
+            }],
+            "_other_addresses": emails[1:] or None,
+        })
+    Path(out).write_text(json.dumps(
+        {"company": company, "domain": domain, "generated_at": utcnow(),
+         "candidates": out_rows}, indent=2))
+    typer.echo(f"  wrote {len(out_rows)} candidate(s) to {out}")
+    typer.secho("  title and personalization are TODO/null by design -- fill them in, "
+                "then ingest.", fg=typer.colors.YELLOW)
+
+
+@app.command("traverse-company")
+def traverse_company(
+    name: str = typer.Argument(...),
+    expand: int = typer.Option(0, "--expand", help="expand the top N entry points"),
+    since: int = typer.Option(2022, "--since"),
+    run: str = typer.Option("manual", "--run-id"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Entry points into a company, from authors who named it as their own affiliation.
+
+    Expansion is off by default. On the three companies measured, a company seed
+    yielded its people from the affiliation query and expansion returned the
+    surrounding research community rather than more employees -- so paying for
+    it has to be a decision, not a default.
+    """
+    from . import graph as G, meter, traverse
+    from .openalex import Client
+
+    conn = open_db(db)
+    client = Client(mailto="jaisharmaus@gmail.com")
+    typer.secho(f"\n=== traverse: {name} ===", fg=typer.colors.CYAN)
+    with transaction(conn):
+        oid, people = traverse.seed_company(conn, client, name, run)
+    typer.echo(f"  entry points (own affiliation string): {len(people)}")
+    ranked = sorted(people.values(), key=lambda r: -r["papers"])
+    for rec in ranked[:15]:
+        ids = len(rec.get("openalex_ids") or [1])
+        typer.echo(f"    {rec['papers']:>2}p  {rec['latest']}  {rec['name'][:34]:<36}"
+                   f"{f'  ({ids} openalex ids merged)' if ids > 1 else ''}")
+    if len(ranked) > 15:
+        typer.echo(f"    ... and {len(ranked) - 15} more")
+
+    if expand:
+        reached = {}
+        for rec in ranked[:expand]:
+            row = conn.execute("SELECT id FROM graph_nodes WHERE kind='person'"
+                               " AND display_name = ?", (rec["name"],)).fetchone()
+            if not row:
+                continue
+            with transaction(conn):
+                e = traverse.expand(conn, client, row["id"], run, seed_node_id=oid,
+                                    hops=2, via="works_at", since=since, min_papers=1)
+            for info in e.coauthors.values():
+                if info["name"].strip().lower() not in people:
+                    reached[info["name"]] = info
+        typer.echo(f"  expanded {min(expand, len(ranked))} -> reached {len(reached)} "
+                   f"new people at 1 hop")
+    typer.echo(f"  openalex calls: {client.calls}"
+               f"{f', throttled {client.throttled}x' if client.throttled else ''}")
+    meter.flush(label="traverse-company")
+
+
 # ------------------------------------------------------------------ suppress
 
 

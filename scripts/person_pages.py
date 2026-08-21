@@ -39,9 +39,10 @@ JUNK = ("example.com", "domain.com", "yourname", "sentry.io", "wixpress",
 class PersonPage:
     name: str
     url: str | None = None
-    status: str = "not_found"       # found | no_email | not_found | blocked
+    status: str = "not_found"   # found | namesake_risk | no_email | not_found | blocked
     emails: list[str] = field(default_factory=list)
     title_line: str | None = None
+    corroborated: bool = False
     tried: list[str] = field(default_factory=list)
 
 
@@ -87,7 +88,16 @@ def _looks_like(name: str, text: str) -> bool:
     return all(p in low for p in (parts[0], parts[-1])) if len(parts) >= 2 else False
 
 
-def find(name: str, extra_urls: list[str] | None = None) -> PersonPage:
+def find(name: str, extra_urls: list[str] | None = None,
+         company: str | None = None) -> PersonPage:
+    """Probe for a page. If `company` is given, require the page to mention it.
+
+    Name matching alone is not enough. Probing "Pankaj Gupta" found a real page
+    belonging to a different Pankaj Gupta and read a stranger's address off it.
+    Both name tokens were present, so every check passed and the result looked
+    clean. Requiring the employer to appear too is what separates "a page about
+    someone with this name" from "this person's page".
+    """
     out = PersonPage(name=name)
     for url in (extra_urls or []) + candidate_urls(name):
         out.tried.append(url)
@@ -97,10 +107,16 @@ def find(name: str, extra_urls: list[str] | None = None) -> PersonPage:
         text = r.text or visible_text(r.raw)
         if not _looks_like(name, text):
             continue
-        out.url, out.status = r.final_url or url, "no_email"
+        out.url = r.final_url or url
+        out.corroborated = bool(company) and company.lower().split()[0] in text.lower()
+        out.status = "no_email"
         emails = emails_on(r.raw, text)
         if emails:
-            out.emails, out.status = emails, "found"
+            # An address off a page that never names the employer we are
+            # sourcing for is a namesake until something says otherwise. It is
+            # returned, so the operator can see it, but never as "found".
+            out.emails = emails
+            out.status = "found" if (out.corroborated or not company) else "namesake_risk"
         for line in text.splitlines():
             line = line.strip()
             if 12 < len(line) < 140 and name.split()[-1].lower() not in line.lower():

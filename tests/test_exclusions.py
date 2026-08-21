@@ -203,3 +203,43 @@ def test_mx_only_is_not_a_risk_flag(conn):
                         "liveness_status": None, "name": "A B",
                         "email": "a@b.test", "account_domain": "b.test"})
     assert not any("mx_only" in f or "port 25" in f for f in flags)
+
+
+# ------------------------------------------------------- person page probing
+
+
+def test_an_uncorroborated_page_is_a_namesake_not_a_contact(monkeypatch):
+    """Probing "Pankaj Gupta" for Baseten found a real page belonging to a
+    different Pankaj Gupta and read a stranger's address off it. Both name
+    tokens were present, so every check passed and the hit looked clean."""
+    from scripts import person_pages
+    from scripts.homepages import HomepageResult
+
+    page = ('<html><body>Pankaj Gupta. Yoga instructor. '
+            '<a href="mailto:someone@yogins.com">mail</a></body></html>')
+    monkeypatch.setattr(person_pages, "fetch_one",
+                        lambda url, timeout=20: HomepageResult(
+                            url, "ok", text="Pankaj Gupta. Yoga instructor.", raw=page))
+
+    hit = person_pages.find("Pankaj Gupta", company="Baseten")
+    assert hit.status == "namesake_risk"
+    assert not hit.corroborated
+    assert hit.emails == ["someone@yogins.com"]      # surfaced, never promoted
+
+    # Same page, no company asked for: nothing to corroborate against.
+    assert person_pages.find("Pankaj Gupta").status == "found"
+
+
+def test_a_corroborated_page_is_a_real_hit(monkeypatch):
+    from scripts import person_pages
+    from scripts.homepages import HomepageResult
+
+    page = ('<html><body>Jisen Li, AI Researcher at Together AI. '
+            'jisenli@together.ai</body></html>')
+    monkeypatch.setattr(person_pages, "fetch_one",
+                        lambda url, timeout=20: HomepageResult(
+                            url, "ok", text="Jisen Li, AI Researcher at Together AI. "
+                                            "jisenli@together.ai", raw=page))
+    hit = person_pages.find("Jisen Li", company="Together AI")
+    assert hit.status == "found" and hit.corroborated
+    assert "jisenli@together.ai" in hit.emails

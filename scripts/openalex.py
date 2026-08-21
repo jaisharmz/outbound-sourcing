@@ -34,6 +34,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
+from . import meter
+
 API = "https://api.openalex.org"
 
 
@@ -104,11 +106,13 @@ class Client:
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     self.calls += 1
+                    meter.bump("openalex_calls")
                     time.sleep(self.delay)
                     return json.loads(resp.read())
             except urllib.error.HTTPError as exc:
                 if exc.code == 429 and attempt < 5:
                     self.throttled += 1
+                    meter.bump("openalex_throttled")
                     time.sleep(backoff)
                     backoff *= 2
                     continue

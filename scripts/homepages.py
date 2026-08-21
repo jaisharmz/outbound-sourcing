@@ -25,6 +25,8 @@ import urllib.request
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
+from . import meter
+
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
@@ -151,6 +153,7 @@ def classify(page: str, text: str, embedded: str) -> tuple[str, str]:
 
 
 def fetch_one(url: str, timeout: int = 20) -> HomepageResult:
+    meter.bump("http_fetches")
     if not url:
         return HomepageResult(url, "dead", detail="no url")
     if not url.startswith("http"):
