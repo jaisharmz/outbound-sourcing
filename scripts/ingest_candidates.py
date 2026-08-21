@@ -124,14 +124,21 @@ def upsert_account(conn: sqlite3.Connection, cf: CandidateFile, source: str, sou
 def upsert_contact(
     conn: sqlite3.Connection, account_id: int, c: Candidate, source_file: str
 ) -> tuple[int, bool]:
+    # Segmentation lives on the account and has to reach the contact, or M11
+    # reports a blended reply rate across campaigns that fail differently.
+    acct = conn.execute(
+        "SELECT tier, campaign, ai_depth FROM accounts WHERE id = ?", (account_id,)
+    ).fetchone()
     email = normalize_email(c.email)
     row = conn.execute("SELECT id FROM contacts WHERE email = ?", (email,)).fetchone()
     if row:
         conn.execute(
             "UPDATE contacts SET title = ?, confidence = ?, personalization = ?,"
-            " personalization_source_url = ?, candidate_file = ?, updated_at = ? WHERE id = ?",
+            " personalization_source_url = ?, candidate_file = ?, tier = ?, campaign = ?,"
+            " ai_depth = ?, updated_at = ? WHERE id = ?",
             (c.title, c.confidence, c.personalization, c.personalization_source_url,
-             source_file, utcnow(), row["id"]),
+             source_file, acct["tier"], acct["campaign"], acct["ai_depth"],
+             utcnow(), row["id"]),
         )
         cid = int(row["id"])
         conn.execute("DELETE FROM evidence WHERE contact_id = ?", (cid,))
@@ -141,11 +148,12 @@ def upsert_contact(
     cur = conn.execute(
         "INSERT INTO contacts (account_id, name, first_name, last_name, title, email,"
         " email_domain, email_basis, confidence, personalization, personalization_source_url,"
-        " timezone, country, linkedin_url, candidate_file, created_at, updated_at)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " timezone, country, linkedin_url, candidate_file, tier, campaign, ai_depth,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (account_id, c.name, c.first_name, c.last_name, c.title, email, domain_of(email),
          c.email_basis, c.confidence, c.personalization, c.personalization_source_url,
-         c.timezone, c.country, c.linkedin_url, source_file, utcnow(), utcnow()),
+         c.timezone, c.country, c.linkedin_url, source_file,
+         acct["tier"], acct["campaign"], acct["ai_depth"], utcnow(), utcnow()),
     )
     cid = int(cur.lastrowid)
     _insert_evidence(conn, cid, c)
@@ -236,6 +244,12 @@ def _ingest_company(
 
         seen_people[person_key] = email
         _, added = upsert_contact(conn, account_id, c, str(path))
+        # Mark any pre-known person as resolved so a later brief does not spend
+        # budget rediscovering someone we now have an address for.
+        conn.execute(
+            "UPDATE known_people SET resolved = 1 WHERE account_id = ? AND name = ?",
+            (account_id, c.name),
+        )
         per_company += 1
         if added:
             report.contacts_added += 1

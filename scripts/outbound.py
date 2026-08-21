@@ -237,6 +237,7 @@ def prefilter_cmd(
     export_batch: Optional[str] = typer.Option(None, "--export-batch", help="write JSON"),
     import_verdicts: Optional[str] = typer.Option(None, "--import-verdicts"),
     limit: int = typer.Option(200, "--limit"),
+    config_path: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
 ):
     """Stage 0: decide which accounts are worth a full research budget.
@@ -261,9 +262,10 @@ def prefilter_cmd(
         except json.JSONDecodeError as exc:
             _err(f"{import_verdicts}: not valid JSON -- {exc}")
             raise typer.Exit(2)
+        routes = _config(config_path).campaigns.depth_routes()
         try:
             with transaction(conn):
-                counts = prefilter_mod.import_verdicts(conn, payload)
+                counts = prefilter_mod.import_verdicts(conn, payload, depth_routes=routes)
         except ValueError as exc:
             _err(str(exc))
             raise typer.Exit(2)

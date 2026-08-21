@@ -187,6 +187,7 @@ imported as `degraded` and re-queue rather than reading as finished.
 | existing | result |
 |---|---|
 | `excluded` | stays `excluded` — clearing an exclusion is a human's call |
+| `no_contacts` | a company researched properly that yielded nobody. Distinct from `done`, because it is waiting on something to change rather than finished, and `done` hides it from every re-queue. |
 | `done`, `researching` | preserved, never demoted by a second run mentioning the company |
 | anything else | `degraded` if the source run was degraded, else `new` |
 

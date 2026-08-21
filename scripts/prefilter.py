@@ -174,7 +174,8 @@ def export_batch(conn, *, fund: str | None = None, limit: int = 200,
 
 
 
-def import_verdicts(conn, verdicts: list[dict], rule: str = RULESET_LLM) -> dict[str, int]:
+def import_verdicts(conn, verdicts: list[dict], rule: str = RULESET_LLM,
+                    depth_routes: dict[str, str] | None = None) -> dict[str, int]:
     """Load classifier output. Rejects anything malformed rather than guessing."""
     counts = {k: 0 for k in VALID_VERDICTS}
     for v in verdicts:
@@ -216,13 +217,14 @@ def import_verdicts(conn, verdicts: list[dict], rule: str = RULESET_LLM) -> dict
             " prefilter_at = ?, ai_depth = ? WHERE id = ?",
             (verdict, rule, reason, utcnow(), DEPTH.get(verdict), vid),
         )
-        # Fund portfolio companies are startups; tier is what routes a campaign.
-        # ai_depth stays separate so the two pitches report apart.
+        # Depth routes the campaign, because the copy differs by depth. Tier is
+        # still set for fund-sourced rows, which are all startups.
         if verdict in PASS_VERDICTS:
+            campaign = (depth_routes or {}).get(DEPTH[verdict])
             conn.execute(
-                "UPDATE accounts SET tier = COALESCE(tier, 'startup'),"
-                " campaign = COALESCE(campaign, 'startup') WHERE id = ? AND fund IS NOT NULL",
-                (vid,),
+                "UPDATE accounts SET tier = COALESCE(tier, 'startup'), campaign = ?"
+                " WHERE id = ? AND fund IS NOT NULL",
+                (campaign, vid),
             )
     log_event(conn, "info", "prefilter.import", rule=rule, **counts)
     return counts

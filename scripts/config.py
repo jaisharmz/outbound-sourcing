@@ -416,6 +416,10 @@ class CampaignDef(Strict):
     description: str = ""
     # Which landscape tiers enroll into this campaign.
     tiers: list[str] = Field(default_factory=list)
+    # Which stage-0 depths enroll here. A company that trains its own models and
+    # one that ships features on somebody else's need different copy, so depth
+    # routes a campaign the same way tier does.
+    ai_depth: list[str] = Field(default_factory=list)
     # Relative to config/. Falls back to templates/ when unset.
     templates_dir: str | None = None
     # Falls back to the steps in sequence.yaml when unset.
@@ -430,6 +434,17 @@ class Campaigns(Strict):
             if tier in c.tiers:
                 return name
         return None
+
+    def for_depth(self, depth: str | None) -> str | None:
+        if not depth:
+            return None
+        for name, c in self.campaigns.items():
+            if depth in c.ai_depth:
+                return name
+        return None
+
+    def depth_routes(self) -> dict[str, str]:
+        return {d: name for name, c in self.campaigns.items() for d in c.ai_depth}
 
     def get(self, name: str) -> CampaignDef:
         if name not in self.campaigns:

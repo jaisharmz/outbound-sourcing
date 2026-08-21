@@ -306,3 +306,19 @@ def test_rendering_uses_the_campaign_template(two_campaigns):
                    account=account, to="a@b.test", campaign="frontier-lab")
     assert "[WRITE THIS COPY]" in email.body
     assert email.campaign == "frontier-lab"
+
+
+def test_campaigns_route_on_depth_as_well_as_tier(config_root):
+    (config_root / "templates" / "applied").mkdir(exist_ok=True)
+    src = (config_root / "templates" / "step1_initial.md").read_text()
+    (config_root / "templates" / "applied" / "step1_initial.md").write_text(src)
+    (config_root / "campaigns.yaml").write_text(
+        "campaigns:\n"
+        "  startup:\n    tiers: [startup]\n    ai_depth: [builds]\n"
+        "  applied-ai:\n    ai_depth: [applies]\n    templates_dir: templates/applied\n"
+    )
+    cfg = Config(config_root)
+    assert cfg.campaigns.for_depth("builds") == "startup"
+    assert cfg.campaigns.for_depth("applies") == "applied-ai"
+    assert cfg.campaigns.for_depth(None) is None
+    assert cfg.campaigns.depth_routes() == {"builds": "startup", "applies": "applied-ai"}

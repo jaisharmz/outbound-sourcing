@@ -160,6 +160,23 @@ addresses for, so verification still works and the output still looks complete w
 discovery has silently stopped. A company marked `budget_exhausted` is stored as
 `degraded`, not `done`, and re-queues. Never let a thin run read as a finished one.
 
+### 2b. What a good run looks like when it finds nothing
+
+Two of the first three pilot companies emitted an empty file, and both were correct:
+
+- **An acquisition invalidated the affiliation.** Anyscale's three portfolio-listed
+  founders are all real and findable, but the company was acquired three weeks before the
+  run and the whole team is moving. Writing contacts there would have meant asserting a
+  current affiliation we cannot support — and the fund still listed the company `Active`.
+- **Names were groundable, emails were not.** Udio's five founders are confirmed in a
+  launch announcement, but no `@udio.com` address is observable anywhere: not on the site's
+  raw HTML, not in an arXiv footnote, not in Crossref. With no observed address at the
+  domain there is nothing to infer a pattern from, and inferring one anyway is a guess
+  dressed as a record.
+
+Both are stored as `no_contacts`, not `done`, so they re-queue when something changes.
+A file whose `reason` explains itself is a successful run.
+
 ### 3. Ingest
 
 ```bash

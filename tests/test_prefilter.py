@@ -150,11 +150,30 @@ def test_description_grounded_pass_needs_no_url(conn):
     assert conn.execute("SELECT ai_depth FROM accounts").fetchone()[0] == "builds"
 
 
-def test_depth_is_carried_and_routes_a_campaign(conn):
-    seed(conn, [("A", "Payroll with AI features")])
+def test_depth_routes_the_campaign(conn):
+    """A company that trains its own models and one that ships features on
+    somebody else's need different copy, so depth routes a campaign."""
+    routes = {"builds": "startup", "applies": "applied-ai"}
+    seed(conn, [("A", "Payroll with AI features"), ("B", "We train our own models")])
+    conn.execute("UPDATE accounts SET fund='testfund'")
+    apply(conn)
+    import_verdicts(conn, [
+        {"id": 1, "verdict": "pass_applies", "evidence": "description",
+         "reason": "ships AI features on third-party models"},
+        {"id": 2, "verdict": "pass_builds", "evidence": "description",
+         "reason": "trains its own models"},
+    ], depth_routes=routes)
+    rows = {r["name"]: r for r in conn.execute("SELECT name, ai_depth, tier, campaign FROM accounts")}
+    assert (rows["A"]["ai_depth"], rows["A"]["campaign"]) == ("applies", "applied-ai")
+    assert (rows["B"]["ai_depth"], rows["B"]["campaign"]) == ("builds", "startup")
+    assert rows["A"]["tier"] == "startup"
+
+
+def test_depth_route_is_config_driven_not_hardcoded(conn):
+    seed(conn, [("A", "AI features")])
     conn.execute("UPDATE accounts SET fund='testfund'")
     apply(conn)
     import_verdicts(conn, [{"id": 1, "verdict": "pass_applies", "evidence": "description",
-                            "reason": "ships AI features on third-party models"}])
-    row = conn.execute("SELECT ai_depth, tier, campaign FROM accounts").fetchone()
-    assert (row["ai_depth"], row["tier"], row["campaign"]) == ("applies", "startup", "startup")
+                            "reason": "applies models"}],
+                    depth_routes={"applies": "some-other-campaign"})
+    assert conn.execute("SELECT campaign FROM accounts").fetchone()[0] == "some-other-campaign"

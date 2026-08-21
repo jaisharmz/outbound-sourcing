@@ -168,3 +168,42 @@ def test_dry_run_writes_nothing(conn, config, candidates):
     assert report.files_ok == 3
     assert conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+
+
+def test_contacts_inherit_segmentation_from_their_account(conn, config, candidates):
+    """Tier, campaign and depth have to reach the contact, or reporting blends
+    campaigns that fail for different reasons."""
+    ingest(conn, config, candidates)
+    conn.execute("UPDATE accounts SET tier='startup', campaign='startup', ai_depth='builds'")
+    ingest(conn, config, candidates)
+    rows = conn.execute("SELECT tier, campaign, ai_depth FROM contacts").fetchall()
+    assert rows and all(
+        (r["tier"], r["campaign"], r["ai_depth"]) == ("startup", "startup", "builds")
+        for r in rows
+    )
+
+
+def test_a_researched_but_empty_company_is_not_done(conn, config, candidates):
+    """`no_contacts` is distinct from `done`: nobody found is not finished, it is
+    waiting on something to change, and `done` hides it from every re-queue."""
+    ingest(conn, config, candidates)
+    assert conn.execute(
+        "SELECT status FROM accounts WHERE name_normalized = 'silent'"
+    ).fetchone()["status"] == "no_contacts"
+    assert conn.execute(
+        "SELECT status FROM accounts WHERE name_normalized = 'northwind'"
+    ).fetchone()["status"] == "done"
+
+
+def test_known_people_resolve_once_an_address_lands(conn, config, candidates):
+    """A later brief must not spend budget rediscovering someone we can now email."""
+    from scripts.db import utcnow
+    ingest(conn, config, candidates)
+    acct = conn.execute(
+        "SELECT id FROM accounts WHERE name_normalized = 'northwind'").fetchone()["id"]
+    conn.execute(
+        "INSERT INTO known_people (account_id, name, role, provenance, created_at)"
+        " VALUES (?,?,?,?,?)", (acct, "Ada Lovelace", "founder", "fund_portfolio", utcnow()))
+    ingest(conn, config, candidates)
+    assert conn.execute(
+        "SELECT resolved FROM known_people WHERE name = 'Ada Lovelace'").fetchone()[0] == 1

@@ -200,7 +200,15 @@ class CandidateFile(BaseModel):
 
     @property
     def status(self) -> str:
-        return "degraded" if self.budget_exhausted else "done"
+        """How the account should be recorded after this run.
+
+        `no_contacts` is deliberately distinct from `done`: a company that was
+        researched properly and yielded nobody is not finished, it is waiting on
+        something to change. Recording it as done hides it from every re-queue.
+        """
+        if self.budget_exhausted:
+            return "degraded"
+        return "done" if self.candidates else "no_contacts"
 
 
 def validate_file(path: Path, suppressed: set[str] | None = None) -> CandidateFile:

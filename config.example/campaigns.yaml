@@ -14,6 +14,7 @@ campaigns:
       Small and mid-size companies where a named researcher or founder can
       agree to a collaboration without a procurement process.
     tiers: [startup]
+    ai_depth: [builds]
     templates_dir: templates/startup
 
   frontier-lab:
@@ -23,3 +24,11 @@ campaigns:
       without a formal partnership process.
     tiers: [frontier-lab]
     templates_dir: templates/frontier-lab
+
+  applied-ai:
+    description: >-
+      Companies that ship AI features on top of somebody else's models rather
+      than training their own. Largest segment by count and the one with no
+      written copy yet, so it is scaffolded and deliberately blocked.
+    ai_depth: [applies]
+    templates_dir: templates/applied-ai
