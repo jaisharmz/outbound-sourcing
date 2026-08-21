@@ -16,6 +16,7 @@ import re
 import sqlite3
 import ssl
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .config import Config
@@ -29,8 +30,23 @@ WALL_MARKERS = ("request access", "you need access", "access denied",
                 "you need permission", "restricted")
 
 
+# Domains reserved by RFC 2606 and the ones config.example ships. A placeholder
+# is not a broken link: failing on it means a new user's first doctor run shows
+# a FAIL they did not cause, which is how people learn to ignore FAILs.
+PLACEHOLDER_HOSTS = ("example.com", "example.org", "example.net", "example.test",
+                     "example.invalid", "localhost")
+
+
+def is_placeholder(url: str) -> bool:
+    host = urllib.parse.urlsplit(url).hostname or ""
+    return any(host == h or host.endswith("." + h) for h in PLACEHOLDER_HOSTS)
+
+
 def check_url(url: str, timeout: int = 30) -> tuple[str, str]:
-    """Return (status, detail). ok | login_wall | permission_wall | dead."""
+    """Return (status, detail). ok | placeholder | login_wall | permission_wall | dead."""
+    if is_placeholder(url):
+        return "placeholder", ("an example URL from config.example -- replace it with "
+                               "your own before sending")
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -120,5 +136,14 @@ def gate(conn: sqlite3.Connection, config: Config, campaign: str | None = None) 
     if stale or len(rows) < len(live):
         return ["linked documents changed since they were last checked. "
                 "Run: outbound check-links"]
-    return [f"{r['name']} link is not publicly reachable ({r['status']}): {r['detail']}"
-            for r in rows if r["status"] != "ok"]
+    # A placeholder blocks a campaign -- you must not email a stranger a link to
+    # example.com -- but it is reported as unfinished setup, not a dead link.
+    out = []
+    for r in rows:
+        if r["status"] == "placeholder":
+            out.append(f"{r['name']} is still the example URL from config.example. "
+                       f"Replace it in config/sequence.yaml with your own.")
+        elif r["status"] != "ok":
+            out.append(f"{r['name']} link is not publicly reachable "
+                       f"({r['status']}): {r['detail']}")
+    return out

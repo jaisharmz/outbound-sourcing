@@ -66,9 +66,13 @@ nothing to register.
    App passwords do not exist without it — this is the step people skip.
 2. Go to **myaccount.google.com/apppasswords**
 3. Name it `outbound`, create it, copy the 16 characters.
-4. Put it in `config/secrets.env`:
+4. Create `config/secrets.env` from the example and fill it in:
+   ```bash
+   cp config.example/secrets.env.example config/secrets.env
    ```
-   GMAIL_APP_PASSWORD_PERSONAL=abcd efgh ijkl mnop
+   Then set:
+   ```
+   SMTP_APP_PASSWORD=abcd efgh ijkl mnop
    ```
    Spaces are fine. Keep the quotes off.
 

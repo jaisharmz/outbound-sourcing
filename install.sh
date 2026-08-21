@@ -113,6 +113,11 @@ else
   [ -d config.example ] || die "config.example/ is missing from this checkout." \
     "Re-clone the repository."
   cp -R config.example config
+  # The example ships secrets.env.example; the tool reads secrets.env. Copying
+  # it here means the new user edits a file that already exists rather than
+  # being told to create one.
+  [ -f config/secrets.env ] || cp config.example/secrets.env.example config/secrets.env
+  rm -f config/secrets.env.example
   ok "config/ scaffolded from config.example/"
   info "edit config/persona.md and config/secrets.env before the first run"
 fi
@@ -149,11 +154,18 @@ link() {   # link <target> <linkname>  -- idempotent, never clobbers a real dir
   ln -s "$target" "$name"
 }
 
-if [ "$ROOT" != "$SKILLS/outbound-sourcing" ]; then
+if [ "$ROOT" = "$SKILLS/outbound-sourcing" ]; then
+  ok "skill already lives in ~/.claude/skills/"
+elif [ -e "$SKILLS/outbound-sourcing" ] && [ ! -L "$SKILLS/outbound-sourcing" ]; then
+  # Something real is already there -- another checkout, or an older copy.
+  # Never replace it; say which one Claude will actually load.
+  printf '  \033[33mkept\033[0m  %s already exists and is not a symlink\n' \
+    "$SKILLS/outbound-sourcing"
+  info "Claude will load THAT copy, not this one."
+  info "To use this checkout instead, move the other one aside first."
+else
   link "$ROOT" "$SKILLS/outbound-sourcing"
   ok "skill linked into ~/.claude/skills/"
-else
-  ok "skill already lives in ~/.claude/skills/"
 fi
 
 if [ -f "$ROOT/.claude/commands/outbound.md" ]; then

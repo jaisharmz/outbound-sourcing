@@ -147,10 +147,25 @@ def check_secrets(root: Path) -> Check:
         if "=" in line and not line.strip().startswith("#"):
             k, _, v = line.partition("=")
             present[k.strip()] = bool(v.strip())
-    missing = [k for k in ("GMAIL_APP_PASSWORD_PERSONAL",) if not present.get(k)]
+    # Which key is required is a config question, not a constant. Hardcoding one
+    # name meant this reported the developer's key as missing on a fresh install
+    # that correctly used the example's.
+    required = []
+    try:
+        from .config import Config
+
+        for mb in Config(root).mailboxes.enabled():
+            ref = getattr(mb, "auth_ref", None)
+            if ref:
+                required.append(ref)
+    except Exception:
+        pass
+
+    missing = [k for k in required if not present.get(k)]
     if missing:
         return _c("secrets.env present", FAIL,
-                  f"{', '.join(missing)} is empty. Sending and drafting both need it",
+                  f"{', '.join(missing)} is empty, and the enabled mailbox needs it "
+                  f"to send or draft anything",
                   ["enable 2-Step Verification on the Google account",
                    "create an app password: myaccount.google.com/apppasswords",
                    "paste the 16 characters into config/secrets.env"])
@@ -288,6 +303,15 @@ def check_links(root: Path) -> Check:
         return _c("linked documents open", FAIL, str(exc).splitlines()[0], [])
     if not urls:
         return _c("linked documents open", OK, "no linked documents")
+    from .check_links import is_placeholder
+
+    placeholders = [u for u in urls if is_placeholder(u)]
+    if placeholders:
+        return _c("linked documents open", WARN,
+                  f"{len(placeholders)} link(s) are still the example URLs from "
+                  f"config.example",
+                  ["replace them in config/sequence.yaml with your own documents",
+                   "a campaign will not start while an example URL remains"])
     bad = []
     for url in sorted(urls):
         status, detail = check_url(url)

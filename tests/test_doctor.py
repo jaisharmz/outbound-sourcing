@@ -104,8 +104,11 @@ def test_a_wrong_app_password_explains_2fa(config_root, monkeypatch):
 
 def test_secrets_check_never_prints_a_value(config_root):
     """Terminal output lands in transcripts. Presence only, never values."""
+    from scripts.config import Config
+
+    ref = Config(config_root).mailboxes.enabled()[0].auth_ref
     (config_root / "secrets.env").write_text(
-        "GMAIL_APP_PASSWORD_PERSONAL=hunter2supersecret\nGITHUB_TOKEN=ghp_realtoken\n")
+        f"{ref}=hunter2supersecret\nGITHUB_TOKEN=ghp_realtoken\n")
     check = D.check_secrets(config_root)
     blob = check.detail + " ".join(check.fix)
     assert "hunter2supersecret" not in blob
@@ -115,8 +118,11 @@ def test_secrets_check_never_prints_a_value(config_root):
 def test_a_missing_github_token_is_a_warning_not_a_failure(config_root):
     """It degrades one channel rather than stopping the tool, so it must not
     block install.sh."""
-    (config_root / "secrets.env").write_text(
-        "GMAIL_APP_PASSWORD_PERSONAL=x\nGITHUB_TOKEN=\n")
+    from scripts.config import Config
+
+    # Whatever the enabled mailbox names, so this does not pin one key.
+    ref = Config(config_root).mailboxes.enabled()[0].auth_ref
+    (config_root / "secrets.env").write_text(f"{ref}=x\nGITHUB_TOKEN=\n")
     check = D.check_secrets(config_root)
     assert check.status == D.WARN
     assert any("NO scopes" in f for f in check.fix)
@@ -190,3 +196,16 @@ def test_installer_handles_a_venv_without_pip():
     assert "command -v uv" in src
     assert "uv pip install" in src
     assert "has no pip, and uv is not installed either" in src
+
+
+
+def test_the_required_secret_comes_from_config_not_a_constant(config_root):
+    """Hardcoding one key name reported the developer's key as missing on a
+    fresh install that correctly used the example's."""
+    from scripts.config import Config
+
+    ref = Config(config_root).mailboxes.enabled()[0].auth_ref
+    (config_root / "secrets.env").write_text("SOMETHING_ELSE=x\n")
+    check = D.check_secrets(config_root)
+    assert check.status == D.FAIL
+    assert ref in check.detail, f"should name the key the mailbox needs, not a constant"

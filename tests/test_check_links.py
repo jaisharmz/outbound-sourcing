@@ -71,12 +71,14 @@ def test_classification(monkeypatch, body, disposition, expect):
     class R:
         headers = {"Content-Disposition": disposition}
         def read(self, n): return body
-        def geturl(self): return "https://example.com/a.pdf"
+        def geturl(self): return "https://real-host.test/a.pdf"
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
     monkeypatch.setattr(CL.urllib.request, "urlopen", lambda *a, **k: R())
-    assert CL.check_url("https://example.com/a.pdf")[0] == expect
+    # Not an example.com URL: those short-circuit as placeholders before any
+    # request is made, which is a different test.
+    assert CL.check_url("https://real-host.test/a.pdf")[0] == expect
 
 
 def test_a_removed_link_does_not_block_forever(conn, config_root, monkeypatch):
@@ -100,3 +102,29 @@ def test_a_removed_link_does_not_block_forever(conn, config_root, monkeypatch):
     assert blockers, "removing a link should require a re-check"
     CL.check_all(conn, trimmed)
     assert CL.gate(conn, trimmed) == [], "the tombstone row must not block after re-check"
+
+
+
+def test_an_example_url_is_unfinished_setup_not_a_dead_link():
+    """A fresh install ships example.com URLs. Reporting those as dead shows a
+    new user a FAIL they did not cause on their first run, which is how people
+    learn to ignore FAILs."""
+    status, detail = CL.check_url("https://example.com/a.pdf")
+    assert status == "placeholder"
+    assert "replace it with your own" in detail
+
+    for url in ("https://example.org/x", "https://sub.example.test/y",
+                "http://localhost:8000/z"):
+        assert CL.is_placeholder(url), url
+    assert not CL.is_placeholder("https://drive.google.com/uc?id=abc")
+
+
+def test_a_placeholder_still_blocks_a_campaign(conn, config, monkeypatch):
+    """It must not send -- you cannot email a stranger a link to example.com --
+    but the message says unfinished setup rather than broken link."""
+    _stub(monkeypatch, "placeholder", "an example URL from config.example")
+    CL.check_all(conn, config)
+    blockers = CL.gate(conn, config)
+    assert blockers
+    assert any("still the example URL" in b for b in blockers)
+    assert not any("not publicly reachable" in b for b in blockers)
