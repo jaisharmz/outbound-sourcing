@@ -107,18 +107,19 @@ def db_stats(db: Optional[str] = typer.Option(None, "--db")):
 
 @app.command("discover")
 def discover_cmd(
-    mode: str = typer.Option(..., "--mode", help="list | vc | industry"),
-    run: Optional[str] = typer.Option(None, "--run", help="industry-research run dir"),
-    fund: Optional[str] = typer.Option(None, "--fund", help="fund name from funds.yaml"),
-    file: Optional[str] = typer.Option(None, "--file", help="company list file"),
+    file: str = typer.Option(..., "--file", help="one company per line: name or name,domain"),
     tier: Optional[str] = typer.Option(None, "--tier"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
     dry_run: bool = typer.Option(False, "--dry-run"),
 ):
-    """Find companies and load them into the accounts table."""
-    argv = ["--mode", mode]
-    for flag, value in (("--run", run), ("--fund", fund), ("--file", file), ("--tier", tier),
+    """Load a list of companies into the accounts table.
+
+    The way in when you already have targets. Finding people inside them is
+    `outbound investigate`.
+    """
+    argv = ["--mode", "list", "--file", file]
+    for flag, value in (("--tier", tier),
                         ("--config", config), ("--db", db)):
         if value:
             argv += [flag, value]

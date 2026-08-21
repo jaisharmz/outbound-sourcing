@@ -1,12 +1,13 @@
-"""Company discovery: three modes, one table.
+"""Load a list of companies into the accounts table.
 
-    list      a file of company names the operator supplies
-    vc        portfolio pages, researched agentically, handed here as a list
-    industry  wraps the `industry-research` skill
+    python -m scripts.discover_companies --mode list --file companies.txt --tier startup
 
-All three land in `accounts`. Nothing downstream cares which mode produced a row.
+The file is one company per line, either a bare name or `name,domain`. Blank
+lines and `#` comments are skipped. Re-importing is idempotent, and a domain
+already known is never overwritten by a blank one.
 
-    python -m scripts.discover_companies --mode industry --run <dir>
+This is the entry point for a target list you already have. Finding people
+inside those companies is `outbound investigate`.
 """
 
 from __future__ import annotations
@@ -64,63 +65,6 @@ CATEGORY_MARKERS = (
     "generally", "cohort", "and similar", "the application layer", "harnesses",
     "and the ", "layer generally", "et al",
 )
-
-
-def _is_category(fragment: str) -> bool:
-    """True when a fragment names a category rather than a company."""
-    f = fragment.strip()
-    if not f or len(f.split()) > 5:
-        return True
-    if f[:1].islower():
-        return True
-    return any(m in f.lower() for m in CATEGORY_MARKERS)
-
-
-def split_company_names(name: str) -> list[str]:
-    """Split a grouped label into individual companies.
-
-    Roughly a quarter of real `excluded` entries name several companies in one
-    string -- "Pinecone, Weaviate, LangChain, LlamaIndex" or "Hailo, Axelera AI,
-    Blaize". Those are not valid account rows. Parenthetical content is handled
-    separately, since it is sometimes a qualifier ("Protect AI (Palo Alto
-    Networks)") and sometimes where the actual list lives ("Coding agent
-    harnesses generally (Cursor, OpenClaw and similar)").
-    """
-    raw = name.strip()
-    paren = re.findall(r"\(([^)]*)\)", raw)
-    outer = re.sub(r"\s*\([^)]*\)", "", raw).strip()
-
-    def parts(text: str) -> list[str]:
-        pieces = re.split(r",\s*|\s+and\s+", text)
-        return [p.strip(" .,") for p in pieces if p.strip(" .,")]
-
-    outer_parts = parts(outer)
-    if len(outer_parts) > 1:
-        kept = [p for p in outer_parts if not _is_category(p)]
-        if len(kept) > 1:
-            return kept
-        if kept and not paren:
-            return kept
-
-    # The outer text was a single label. If it is a category and the parentheses
-    # hold a list, that list is the real content.
-    if paren and _is_category(outer):
-        inner = [p for p in parts(paren[0]) if not _is_category(p)]
-        if len(inner) > 1:
-            return inner
-
-    return [raw]
-
-
-def auto_drop_reason(reason: str | None, patterns: list[str]) -> str | None:
-    """Return the pattern that marks this exclusion as never-a-target."""
-    if not reason:
-        return None
-    low = reason.lower()
-    for pat in patterns:
-        if pat.lower() in low:
-            return pat
-    return None
 
 
 @dataclass
@@ -215,287 +159,6 @@ class DiscoveryReport:
         return "\n".join(lines)
 
 
-# ------------------------------------------------------------------ industry
-
-
-def read_report_json(run_dir: Path) -> dict[str, Any] | None:
-    """`report.json`, the cleanest surface when a run has one.
-
-    It carries the same `orgs` and `excluded` structures as `landscape.md` but as
-    real JSON, so it cannot be lost to a YAML quoting mistake in prose. Present
-    in 6 of 11 runs sampled.
-    """
-    path = run_dir / "report.json"
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict) or not data.get("orgs"):
-        return None
-    return data
-
-
-def _salvage_orgs(text: str) -> tuple[list[dict], int]:
-    """Parse a list-of-mappings block one record at a time.
-
-    A single malformed record otherwise costs the entire block, and therefore an
-    entire run. One real file contains `what: "Critique of World Model," at v5
-    ...` -- a quoted scalar followed by bare text -- which is a YAML error that
-    took out 760 lines and about thirty companies. Skip the bad record, keep the
-    rest, and report how many were dropped.
-    """
-    items, dropped, current = [], 0, []
-
-    def flush():
-        nonlocal dropped
-        if not current:
-            return
-        try:
-            parsed = yaml.safe_load("\n".join(current))
-        except yaml.YAMLError:
-            dropped += 1
-            return
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            items.append(parsed[0])
-        else:
-            dropped += 1
-
-    for line in text.splitlines():
-        if re.match(r"^\s*- ", line):
-            flush()
-            current = [line]
-        elif current:
-            current.append(line)
-    flush()
-    return items, dropped
-
-
-def read_yaml_block(path: Path, report: "DiscoveryReport | None" = None) -> dict[str, Any] | None:
-    """Pull the fenced YAML block out of an industry-research markdown file."""
-    if not path.exists():
-        return None
-    lines = path.read_text().splitlines()
-    try:
-        start = next(i for i, l in enumerate(lines) if l.startswith("```yaml"))
-        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("```"))
-    except StopIteration:
-        return None
-    body = lines[start + 1:end]
-    try:
-        data = yaml.safe_load("\n".join(body))
-        if isinstance(data, dict):
-            return data
-    except yaml.YAMLError:
-        pass
-
-    # Whole-block parse failed. Recover the sections we actually need.
-    out: dict[str, Any] = {}
-    sections: dict[str, list[str]] = {}
-    key = None
-    for line in body:
-        # A top-level key starts at column zero. One carrying an inline value
-        # (`investors: []`) still ends the previous section -- otherwise it gets
-        # swallowed into it and corrupts the last record there.
-        m = re.match(r"^(\w+):(.*)$", line)
-        if m:
-            key = m.group(1) if not m.group(2).strip() else None
-            if key:
-                sections[key] = []
-        elif key:
-            sections[key].append(line)
-    total_dropped = 0
-    for name in ("orgs", "excluded"):
-        if name in sections:
-            items, dropped = _salvage_orgs("\n".join(sections[name]))
-            out[name] = items
-            total_dropped += dropped
-    if not out:
-        return None
-    if report is not None:
-        report.warnings.append(
-            f"{path.name} has a YAML syntax error; recovered "
-            f"{len(out.get('orgs', []))} orgs record-by-record and dropped {total_dropped}"
-        )
-    return out
-
-
-def read_run_json(run_dir: Path) -> dict[str, Any]:
-    """Read run.json leniently.
-
-    Its real shape has drifted from the schema in the skill's own docs -- it
-    gained `degraded`, `verification`, `corrections_applied`, `integrity_warning`
-    and `known_gaps`, and lost the documented `profile_hash`. Depend only on the
-    keys that have held.
-    """
-    path = run_dir / "run.json"
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-# Two kinds of URL, and confusing them is how a company ends up with the wrong
-# sending domain.
-#
-#   DECLARED   the source says "this is the company's website" -- a fund
-#              portfolio entry, a `Name,domain` line in a list file. Take it.
-#   CITED      the source offers it as evidence for a claim -- a landscape
-#              `url`, which for Google DeepMind is an arXiv abstract. Screen it.
-#
-# The aggregator screen belongs only on the cited path. Running it on a declared
-# field discards Medium and Substack for being on the blogging-platform list.
-
-
-def declared_domain(url: str | None) -> str | None:
-    """Registrable domain of a URL the source declares to be the company's own.
-
-    No aggregator screen: the source already asserted whose site this is.
-    """
-    if not url or not isinstance(url, str):
-        return None
-    match = re.match(r"^https?://([^/\s:]+)", url.strip())
-    if not match:
-        return None
-    return registrable_domain(match.group(1).lower().removeprefix("www."))
-
-
-def domain_from_cited_url(url: str | None) -> tuple[str | None, str]:
-    """Derive a sending domain from an evidence URL, or refuse to.
-
-    Only for URLs a source *cited*, never for one it declared. See above.
-
-    Returns (domain, confidence). Confidence is never better than 'candidate':
-    the URL was cited as evidence for a claim, not offered as a homepage.
-    """
-    if not url or not isinstance(url, str):
-        return None, "unknown"
-    match = re.match(r"^https?://([^/\s:]+)", url.strip())
-    if not match:
-        return None, "unknown"
-    host = match.group(1).lower().removeprefix("www.")
-    reg = registrable_domain(host)
-    if host in AGGREGATOR_HOSTS or reg in AGGREGATOR_DOMAINS or host.endswith(".github.io"):
-        return None, "aggregator"
-    # A path-bearing docs or blog subdomain is still that company's domain, but
-    # it is not necessarily where their mail lives.
-    return reg, "candidate"
-
-
-def from_industry_run(config: Config, run_dir: Path, tiers: set[str]) -> tuple[list[CompanyRecord], DiscoveryReport]:
-    run_dir = Path(run_dir).expanduser()
-    if not run_dir.is_dir():
-        raise ConfigError(f"not a directory: {run_dir}")
-
-    report = DiscoveryReport(source="industry", source_ref=str(run_dir))
-    meta = read_run_json(run_dir)
-    if meta.get("degraded"):
-        detail = meta["degraded"]
-        note = detail.get("websearch") if isinstance(detail, dict) else str(detail)
-        report.degraded_run = str(note)[:200]
-
-    block = read_report_json(run_dir)
-    if block:
-        report.warnings.append("read orgs from report.json")
-    else:
-        block = read_yaml_block(run_dir / "landscape.md", report)
-    if not block:
-        report.warnings.append(
-            f"{run_dir/'landscape.md'} has no parseable YAML block; falling back to the "
-            f"key_companies lists in the avenue frontmatter, which carry names but no URLs"
-        )
-        return _from_avenue_frontmatter(run_dir, tiers, report), report
-
-    orgs = block.get("orgs") or []
-    if not isinstance(orgs, list):
-        report.warnings.append("landscape.md `orgs` is not a list; nothing imported")
-        return [], report
-
-    records: list[CompanyRecord] = []
-    for org in orgs:
-        if not isinstance(org, dict) or not org.get("name"):
-            continue
-        tier = str(org.get("tier") or "").strip()
-        if tiers and tier not in tiers:
-            report.skipped_tier.append(f"{org['name']} ({tier or 'no tier'})")
-            continue
-        domain, confidence = domain_from_cited_url(org.get("url"))
-        if not domain:
-            report.no_domain.append(str(org["name"]))
-        sub = org.get("subproblems")
-        records.append(CompanyRecord(
-            name=str(org["name"]),
-            tier=tier or None,
-            campaign=config.campaigns.for_tier(tier) if tier else None,
-            domain=domain,
-            domain_confidence=confidence,
-            what=str(org["what"])[:1000] if org.get("what") else None,
-            entry_note=str(org["entry"])[:1000] if org.get("entry") else None,
-            ships=bool(org["ships"]) if isinstance(org.get("ships"), bool) else None,
-            subproblems=[str(x) for x in sub] if isinstance(sub, list) else [],
-            evidence_url=str(org.get("evidence") or org.get("url") or "") or None,
-            source="industry",
-            source_ref=str(run_dir),
-        ))
-
-    # The source run's exclusions. Imported for triage rather than dropped: its
-    # inclusion test is topical and answers a different question than ours.
-    drop_patterns = config.icp.auto_drop_reason_patterns
-    for ex in block.get("excluded") or []:
-        if not isinstance(ex, dict) or not ex.get("name"):
-            continue
-        why = str(ex.get("why") or "excluded by the source run")[:500]
-        matched = auto_drop_reason(why, drop_patterns)
-        names = split_company_names(str(ex["name"]))
-        if len(names) > 1:
-            report.split_names.append(f"{ex['name']} -> {', '.join(names)}")
-        for n in names:
-            if matched:
-                report.auto_dropped.append(f"{n} (matched {matched!r})")
-                records.append(CompanyRecord(
-                    name=n, source="industry", source_ref=str(run_dir),
-                    evidence_url=str(ex.get("evidence") or "") or None,
-                    excluded_reason=f"auto-dropped, matched {matched!r}: {why}",
-                ))
-            else:
-                report.needs_triage.append(n)
-                records.append(CompanyRecord(
-                    name=n, source="industry", source_ref=str(run_dir),
-                    evidence_url=str(ex.get("evidence") or "") or None,
-                    source_note=f"excluded by the source run as off-topic for it: {why}",
-                ))
-    return records, report
-
-
-def _from_avenue_frontmatter(run_dir: Path, tiers: set[str],
-                             report: DiscoveryReport) -> list[CompanyRecord]:
-    """Fallback: key_companies from each avenue's YAML header. Names only."""
-    names: set[str] = set()
-    for path in sorted((run_dir / "avenues").glob("*.md")) if (run_dir / "avenues").is_dir() else []:
-        text = path.read_text()
-        match = re.match(r"\A---\n(.*?)\n---", text, re.S)
-        if not match:
-            continue
-        try:
-            fm = yaml.safe_load(match.group(1)) or {}
-        except yaml.YAMLError:
-            continue
-        for n in fm.get("key_companies") or []:
-            names.add(str(n).strip())
-    if not names:
-        report.warnings.append(f"{run_dir/'avenues'} yielded no key_companies either")
-    report.no_tier.extend(sorted(names))
-    return [
-        CompanyRecord(name=n, source="industry", source_ref=str(run_dir),
-                      domain_confidence="unknown")
-        for n in sorted(names)
-    ]
-
-
 # ------------------------------------------------------------------ list / vc
 
 
@@ -523,56 +186,6 @@ def from_name_list(path: Path, source: str, config: Config,
         ))
     return records, report
 
-
-
-# ------------------------------------------------------------------ vc funds
-
-
-def from_fund(config: Config, fund_name: str, *, force: bool = False,
-              limit: int | None = None) -> tuple[list[CompanyRecord], DiscoveryReport]:
-    """Read one fund's portfolio. Strategy comes from config/funds.yaml."""
-    from . import funds as funds_mod
-
-    if fund_name not in config.funds.funds:
-        raise ConfigError(
-            f"no fund named {fund_name!r} in funds.yaml. "
-            f"Known: {sorted(config.funds.funds) or '(none)'}"
-        )
-    spec = config.funds.funds[fund_name].model_dump()
-    report = DiscoveryReport(source="vc", source_ref=fund_name)
-    try:
-        companies = funds_mod.extract(fund_name, spec, force=force, limit=limit)
-    except funds_mod.FundError as exc:
-        raise ConfigError(str(exc)) from exc
-
-    records = []
-    for c in companies:
-        # A fund lists a company's own website, so the URL is declared rather
-        # than cited as evidence. The aggregator screen must not run here: it
-        # exists for landscape files where the url may be an arXiv abstract, and
-        # applying it would throw away Medium and Substack for being on the
-        # blogging-platform list.
-        domain = declared_domain(c.domain_url)
-        confidence = "declared" if domain else "unknown"
-        if not domain:
-            report.no_domain.append(c.name)
-        records.append(CompanyRecord(
-            name=c.name,
-            domain=domain,
-            domain_confidence=confidence,
-            what=(c.description or None),
-            evidence_url=c.domain_url or c.detail_url,
-            source="vc",
-            source_ref=f"{fund_name}:{spec['url']}",
-            fund=fund_name,
-            relationship=spec.get("relationship"),
-            stages=c.stages,
-            verticals=c.verticals,
-            year_founded=c.year_founded,
-            founders=c.founders,
-        ))
-    report.founders_found = sum(len(c.founders) for c in companies)
-    return records, report
 
 
 # ------------------------------------------------------------------ persist
@@ -668,18 +281,15 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
               ref=report.source_ref, added=report.added, updated=report.updated)
 
 
-# ------------------------------------------------------------------ cli
+
+# ---------------------------------------------------------------- cli
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Discover companies into the accounts table.")
-    ap.add_argument("--mode", choices=["list", "vc", "industry"], required=True)
-    ap.add_argument("--run", help="industry-research run directory (mode=industry)")
-    ap.add_argument("--fund", help="fund name from funds.yaml (mode=vc)")
-    ap.add_argument("--file", help="company list file (mode=list|vc)")
-    ap.add_argument("--force-refetch", action="store_true")
-    ap.add_argument("--limit", type=int)
-    ap.add_argument("--tier", help="tier to assign (mode=list|vc)")
+    ap.add_argument("--mode", choices=["list"], default="list")
+    ap.add_argument("--file", required=True, help="company list file")
+    ap.add_argument("--tier", help="tier to assign")
     ap.add_argument("--config")
     ap.add_argument("--db")
     ap.add_argument("--dry-run", action="store_true")
@@ -691,22 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
 
-    tiers = {t for c in config.campaigns.campaigns.values() for t in c.tiers}
-
     try:
-        if args.mode == "industry":
-            if not args.run:
-                print("--run is required for mode=industry", file=sys.stderr)
-                return 2
-            records, report = from_industry_run(config, Path(args.run), tiers)
-        elif args.mode == "vc" and args.fund:
-            records, report = from_fund(config, args.fund, force=args.force_refetch,
-                                        limit=args.limit)
-        else:
-            if not args.file:
-                print("--file or --fund is required for this mode", file=sys.stderr)
-                return 2
-            records, report = from_name_list(Path(args.file), args.mode, config, args.tier)
+        records, report = from_name_list(Path(args.file), args.mode, config, args.tier)
     except ConfigError as exc:
         print(exc, file=sys.stderr)
         return 2

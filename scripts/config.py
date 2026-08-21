@@ -495,19 +495,6 @@ class PersonalExclusions(Strict):
         return any(p.strip().lower() == n for p in self.people)
 
 
-class FundSpec(BaseModel):
-    """How to read one fund's portfolio page. Keys vary by strategy."""
-
-    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
-
-    url: str
-    strategy: Literal["embedded_json", "list_plus_detail", "sitemap_names"]
-
-
-class Funds(Strict):
-    funds: dict[str, FundSpec] = Field(default_factory=dict)
-
-
 class CCRule(Strict):
     cc: list[str] | None = None
     bcc: list[str] | None = None
@@ -616,11 +603,6 @@ class Config:
             _load(PersonalExclusions, self.root / "personal_exclusions.yaml")
             if (self.root / "personal_exclusions.yaml").exists()
             else PersonalExclusions()
-        )
-        self.funds: Funds = (
-            _load(Funds, self.root / "funds.yaml")
-            if (self.root / "funds.yaml").exists()
-            else Funds()
         )
         self.campaigns: Campaigns = (
             _load(Campaigns, self.root / "campaigns.yaml")
