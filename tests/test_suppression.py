@@ -123,3 +123,51 @@ def test_load_set_returns_every_value(conn):
     add(conn, "email", "a@b.test", "r")
     add(conn, "domain", "c.test", "r")
     assert load_set(conn) == {"a@b.test", "c.test"}
+
+
+# ---------------------------------------------------------------- labs
+
+
+def contact_in_lab(conn, name, lab, email=None):
+    from scripts.db import utcnow
+    conn.execute("INSERT OR IGNORE INTO accounts (name, name_normalized, source, status,"
+                 " created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                 ("Lab Co", "lab co", "list", "new", utcnow(), utcnow()))
+    aid = conn.execute("SELECT id FROM accounts WHERE name='Lab Co'").fetchone()["id"]
+    conn.execute("INSERT INTO contacts (account_id, name, first_name, title, email,"
+                 " email_domain, email_basis, confidence, lab, created_at, updated_at)"
+                 " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                 (aid, name, name.split()[0], "Research Scientist",
+                  email or f"{name.split()[0].lower()}@lab.test", "lab.test",
+                  "observed", 0.9, lab, utcnow(), utcnow()))
+
+
+def test_one_reply_suppresses_the_whole_lab(conn):
+    """Four people from one research group are colleagues who compare notes, and
+    traversal surfaces them together."""
+    from scripts.suppression import suppress_lab
+    for n in ("Ada Lovelace", "Grace Hopper", "Alan Turing"):
+        contact_in_lab(conn, n, "Song Group")
+    contact_in_lab(conn, "Barbara Liskov", "Other Group")
+    suppress_lab(conn, "Song Group", "replied: not interested")
+    stopped = conn.execute("SELECT COUNT(*) FROM contacts WHERE sendable=0").fetchone()[0]
+    assert stopped == 3
+    assert conn.execute("SELECT sendable FROM contacts WHERE lab='Other Group'"
+                        ).fetchone()[0] == 1
+
+
+def test_a_suppressed_lab_stays_suppressed(conn):
+    from scripts.suppression import suppress_lab, is_suppressed
+    contact_in_lab(conn, "Ada Lovelace", "Song Group")
+    suppress_lab(conn, "Song Group", "replied")
+    assert conn.execute("SELECT COUNT(*) FROM suppression WHERE kind='lab'").fetchone()[0] == 1
+
+
+def test_lab_cap_stops_a_fourth_colleague(conn):
+    """Company caps miss this: three people at three companies can be one lab."""
+    from scripts.suppression import lab_is_full
+    assert lab_is_full(conn, "Song Group", cap=2) is False
+    contact_in_lab(conn, "Ada Lovelace", "Song Group")
+    contact_in_lab(conn, "Grace Hopper", "Song Group")
+    assert lab_is_full(conn, "Song Group", cap=2) is True
+    assert lab_is_full(conn, "", cap=2) is False

@@ -808,6 +808,66 @@ def _summarize_auth(headers: str) -> None:
     typer.echo("  (alignment is judged against the From: domain, not Reply-To)")
 
 
+# ------------------------------------------------------------------ verify
+
+
+@app.command("verify")
+def verify_cmd(
+    limit: int = typer.Option(50, "--limit"),
+    recheck: bool = typer.Option(False, "--recheck"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """MX lookup then an SMTP probe. Nothing unverified enters the send queue."""
+    from . import verify as V
+
+    cfg = _config(config)
+    conn = open_db(db)
+    with transaction(conn):
+        counts = V.verify_contacts(conn, limit=limit,
+                                   mail_from=cfg.campaign.verification.smtp_probe_from,
+                                   only_unverified=not recheck)
+    total = sum(counts.values()) or 1
+    for k in ("valid", "catch_all", "mx_only", "unknown", "invalid"):
+        if counts.get(k):
+            typer.echo(f"  {k:<10} {counts[k]:>3}  ({100*counts[k]/total:.0f}%)")
+    if counts.get("mx_only"):
+        typer.secho("\n  mx_only: outbound port 25 is blocked from this network, so the SMTP "
+                    "probe cannot run at all. The domain accepts mail; the mailbox is "
+                    "unconfirmed. Sendable behind the review gate, and flagged there.",
+                    fg=typer.colors.YELLOW)
+    if counts.get("catch_all"):
+        typer.echo("\n  catch_all sends normally: most Workspace and M365 domains accept "
+                   "every recipient, so it is the expected outcome and not a failure.")
+
+
+# ------------------------------------------------------------------ send
+
+
+@app.command("send")
+def send_cmd(
+    limit: int = typer.Option(20, "--limit"),
+    campaign: str = typer.Option("startup", "--campaign"),
+    mailbox: Optional[str] = typer.Option(None, "--mailbox"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    ignore_window: bool = typer.Option(False, "--ignore-window"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Send approved, verified contacts. One mailbox, paced, by hand."""
+    from .send_queue import main as send_main
+
+    argv = ["--limit", str(limit), "--campaign", campaign]
+    for flag, value in (("--mailbox", mailbox), ("--config", config), ("--db", db)):
+        if value:
+            argv += [flag, value]
+    if dry_run:
+        argv.append("--dry-run")
+    if ignore_window:
+        argv.append("--ignore-window")
+    raise typer.Exit(send_main(argv))
+
+
 # ------------------------------------------------------------------ demo
 
 

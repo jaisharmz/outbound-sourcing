@@ -56,6 +56,9 @@ auto_drop_reason_patterns:
   - no listed team
   - solely as an affiliation string
 
+# Traversal surfaces a research group together, and four people from one
+# lab will compare notes with each other.
+max_contacts_per_lab: 2
 max_contacts_per_company: 3
 # Not lowered. Below this an inferred address is a guess at a domain with no
 # convention, and names diverge from addresses even where a pattern looks clean

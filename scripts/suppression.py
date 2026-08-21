@@ -19,7 +19,7 @@ from pathlib import Path
 from .db import log_event, utcnow
 from .normalize import normalize_company
 
-VALID_KINDS = ("email", "domain", "company")
+VALID_KINDS = ("email", "domain", "company", "lab")
 CSV_HEADER = ["kind", "value", "reason", "source", "created_at"]
 
 
@@ -109,6 +109,33 @@ def suppress_company(
         (reason, normalize_company(company)),
     )
     log_event(conn, "info", "suppression.company", company=company, reason=reason)
+
+
+def suppress_lab(conn: sqlite3.Connection, lab: str, reason: str,
+                 csv_path: Path | None = None) -> None:
+    """A reply from one person in a group stops the whole group.
+
+    Company-level suppression misses this: four people from one university lab
+    are colleagues who talk to each other, and traversal surfaces them together.
+    """
+    add(conn, "lab", lab, reason, source="reply", csv_path=csv_path)
+    key = lab.strip().lower()
+    conn.execute("UPDATE contacts SET status='stopped', stopped_reason=?, sendable=0,"
+                 " unsendable_reason=?, updated_at=? WHERE LOWER(lab)=? AND status!='stopped'",
+                 (reason, reason, utcnow(), key))
+    conn.execute("UPDATE messages SET state='cancelled', error=? WHERE state='queued'"
+                 " AND contact_id IN (SELECT id FROM contacts WHERE LOWER(lab)=?)",
+                 (reason, key))
+    log_event(conn, "info", "suppression.lab", lab=lab, reason=reason)
+
+
+def lab_is_full(conn: sqlite3.Connection, lab: str, cap: int) -> bool:
+    """True when this lab already has its share of contacts in flight."""
+    if not lab:
+        return False
+    n = conn.execute("SELECT COUNT(*) FROM contacts WHERE LOWER(lab)=? AND sendable=1",
+                     (lab.strip().lower(),)).fetchone()[0]
+    return n >= cap
 
 
 def load_set(conn: sqlite3.Connection) -> set[str]:

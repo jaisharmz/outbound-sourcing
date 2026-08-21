@@ -71,6 +71,11 @@ def risk_flags(r: sqlite3.Row) -> list[str]:
             pass
     if r["verification_status"] == "catch_all":
         out.append("domain is accept-all, so verification could not confirm the mailbox")
+    if r["verification_status"] == "mx_only":
+        out.append("domain accepts mail but the mailbox was never probed: outbound port 25 "
+                   "is blocked from this network, so SMTP verification cannot run at all")
+    if r["verification_status"] in ("unverified", "unknown"):
+        out.append(f"verification status is {r['verification_status']}; this row should not send")
     if not r["personalization"]:
         out.append("no personalization; the template falls back")
     if r["liveness_status"] and r["liveness_status"] != "live":

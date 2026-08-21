@@ -122,6 +122,9 @@ class ICP(Strict):
     # goes to triage rather than being dropped.
     auto_drop_reason_patterns: list[str] = Field(default_factory=list)
     max_contacts_per_company: int = 3
+    # Traversal surfaces a research group together, and four people from one lab
+    # will compare notes. Capped separately from company.
+    max_contacts_per_lab: int = 2
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
@@ -700,7 +703,7 @@ class Config:
                 + "\n".join(f"  {p}" for p in problems)
             )
 
-    def preflight(self, mode: str = "campaign") -> list[str]:
+    def preflight(self, mode: str = "campaign", campaign: str | None = None) -> list[str]:
         """Things that are structurally valid but must not reach a stranger.
 
         Separate from load-time validation on purpose: a test send to yourself
@@ -723,9 +726,14 @@ class Config:
             if PLACEHOLDER_RE.search(url):
                 blockers.append(f"persona.links[{label!r}] is still a placeholder: {url}")
 
-        # A template left as a stub blocks its campaign by the same mechanism as
-        # a placeholder address: an unwritten email must not be sendable.
-        for name in (self.campaigns.campaigns if mode == "campaign" else {}):
+        # A stub blocks its own campaign, not every campaign. applied-ai is
+        # permanently blocked by design, and without this scoping it would
+        # permanently block the campaign that is actually ready to send.
+        scope = [campaign] if campaign else list(self.campaigns.campaigns)
+        if mode != "campaign":
+            scope = []
+
+        for name in scope:
             for step in self.steps_for(name):
                 path = self.template_path(step, name)
                 if not path.exists():
@@ -737,7 +745,7 @@ class Config:
                     )
 
         # A linked document with no URL is an unwritten email by another route.
-        for name in (self.campaigns.campaigns if mode == "campaign" else {}):
+        for name in scope:
             for step in self.steps_for(name):
                 for label, url in step.links.items():
                     for hit in PLACEHOLDER_RE.findall(url):

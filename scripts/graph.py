@@ -160,6 +160,17 @@ SENIORITY_BAND = {
 HUB_DEGREE = 60          # beyond this a node is a hub, not a lead
 
 
+def topic_overlap(candidate_topics: list[str], seed_topics: list[str]) -> float:
+    """Share of the seed's research area, measured against the seed rather than a
+    hand-written term list. Returns 0.5 when either side has no topics, so an
+    absent signal reads as neutral instead of as a negative."""
+    a = {t.strip().lower() for t in (candidate_topics or []) if t}
+    b = {t.strip().lower() for t in (seed_topics or []) if t}
+    if not a or not b:
+        return 0.5
+    return len(a & b) / len(b)
+
+
 def score_node(conn: sqlite3.Connection, node_id: int, *, hops: int,
                topic_match: float = 0.5, latest_year: int | None = None,
                email_resolvable: bool = False, seniority: str = "unknown") -> Score:
@@ -177,8 +188,16 @@ def score_node(conn: sqlite3.Connection, node_id: int, *, hops: int,
         "reachable": 1.0 if email_resolvable else 0.0,
         "seniority": SENIORITY_BAND.get(seniority, SENIORITY_BAND["unknown"]),
     }
-    weights = {"proximity": 1.0, "corroboration": 1.2, "topic": 1.6,
-               "recency": 1.0, "reachable": 0.8, "seniority": 1.4}
+    # Reweighted after measuring the components on a real run. Topic scoring by
+    # keyword against OpenAlex labels returned 0.00 for people who were plainly
+    # relevant, and a scorer that is wrong is worse than one that is absent, so
+    # `topic` is now overlap with the seed's own topics -- no term list to be
+    # wrong about -- and it is weighted below the two components that measurably
+    # discriminate. path_count and recency are the real signal; the rest is
+    # tie-breaking until affiliation is resolved, at which point seniority and
+    # company fit become real and this should be revisited.
+    weights = {"proximity": 0.8, "corroboration": 2.0, "topic": 0.9,
+               "recency": 1.6, "reachable": 0.6, "seniority": 1.0}
     total = sum(parts[k] * weights[k] for k in parts) / sum(weights.values())
 
     notes = []
