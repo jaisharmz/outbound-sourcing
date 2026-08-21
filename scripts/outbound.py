@@ -224,6 +224,88 @@ def homepages_cmd(
     )
 
 
+# ------------------------------------------------------------------ harvest
+
+
+@app.command("harvest-github")
+def harvest_github_cmd(
+    prefilter: str = typer.Option("pass_builds", "--prefilter"),
+    fund: Optional[str] = typer.Option(None, "--fund"),
+    limit: Optional[int] = typer.Option(None, "--limit"),
+    repos: int = typer.Option(4, "--repos"),
+    config_path: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Harvest observed addresses from public commits and infer domain patterns.
+
+    Deterministic: no model, no judgment. The addresses matter less than the
+    pattern they establish -- one confirmed convention turns every name found
+    elsewhere into a candidate address.
+    """
+    from . import github_harvest as gh
+
+    cfg = _config(config_path)
+    conn = open_db(db)
+    token = cfg.secret("GITHUB_TOKEN")
+    if not token:
+        typer.secho(
+            "GITHUB_TOKEN is not set in config/secrets.env. Unauthenticated GitHub allows "
+            "60 requests an hour, which is not enough to tell 'no public repos' apart from "
+            "'throttled' across a real roster. Create a fine-grained token with no scopes "
+            "selected -- public read is the default -- at github.com/settings/tokens.",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(2)
+
+    where, params = ["prefilter = ?", "domain IS NOT NULL", "status != 'excluded'"], [prefilter]
+    if fund:
+        where.append("fund = ?")
+        params.append(fund)
+    sql = f"SELECT id, name, domain FROM accounts WHERE {' AND '.join(where)} ORDER BY name"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql, tuple(params)).fetchall()
+
+    client = gh.Client(token=token)
+    typer.echo(f"harvesting {len(rows)} domains...\n")
+    results, statuses = [], {}
+    for r in rows:
+        res = gh.harvest_domain(client, r["name"], r["domain"], repos=repos)
+        results.append((r["id"], res))
+        statuses[res.status] = statuses.get(res.status, 0) + 1
+        if res.addresses:
+            pattern, conf, _ = gh.infer_pattern(res.addresses)
+            typer.echo(f"  {r['name'][:24]:<24} {len(res.fresh)} fresh / {len(res.stale)} stale"
+                       f"   pattern={pattern or '-'}")
+
+    with transaction(conn):
+        for account_id, res in results:
+            for email, (name, when) in res.addresses.items():
+                fresh = email in res.fresh
+                conn.execute(
+                    "INSERT OR IGNORE INTO known_people (account_id, name, role, provenance,"
+                    " source_url, created_at) VALUES (?,?,?,?,?,?)",
+                    (account_id, name or email.split("@")[0], "commit author",
+                     "github_commit" if fresh else "github_commit_stale",
+                     f"https://github.com/{res.org}", utcnow()),
+                )
+            pattern, conf, used = gh.infer_pattern(res.addresses)
+            if pattern:
+                conn.execute(
+                    "UPDATE accounts SET email_pattern = ?, email_pattern_confidence = ?,"
+                    " email_pattern_evidence = ? WHERE id = ?",
+                    (pattern, conf, ",".join(sorted(used))[:500], account_id),
+                )
+
+    typer.echo("\noutcomes:")
+    for k in sorted(statuses):
+        typer.echo(f"  {k:<20} {statuses[k]}")
+    if client.limiter.throttled:
+        typer.secho("\n  RATE LIMITED during this run -- some 'no_*' results above may be "
+                    "incomplete. Re-run to fill them in.", fg=typer.colors.YELLOW)
+    typer.echo(f"\n  {client.calls} API calls, {client.limiter.remaining} remaining")
+
+
 # ------------------------------------------------------------------ prefilter
 
 

@@ -65,6 +65,26 @@ it belongs in config.
 > **If you find nobody**, write the file with an empty `candidates` list and a `reason`
 > explaining what you looked at. Never pad.
 
+## Harvesting addresses from public commits
+
+`outbound harvest-github` is the deterministic half of pattern inference. It resolves a
+company's GitHub org, reads author emails off recent public commits, and infers the
+domain's local-part convention. No model, no judgment.
+
+Three things it is careful about, each because the naive version misleads:
+
+- **Throttling is not absence.** An unauthenticated probe once reported "no public repos"
+  for 78 of 88 companies. That read as a finding and was a rate limit. Every outcome is a
+  named status and `throttled` is never reported as `no_public_repos`.
+- **A commit proves an address existed when it landed**, not that the person is still
+  there. Commit dates are recorded and anything older than ~2 years is pattern evidence
+  only, never a sendable contact.
+- **Bots and noreply addresses are filtered** before anything can treat them as candidates.
+
+It needs `GITHUB_TOKEN` in `secrets.env` — a fine-grained token with no scopes selected,
+since public read is the default. Unauthenticated is 60 requests an hour, which cannot
+cover a real roster.
+
 ## Email pattern inference
 
 This is the part that pays for the whole exercise. One observed address at a domain

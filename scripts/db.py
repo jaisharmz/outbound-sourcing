@@ -7,6 +7,7 @@ The database is the single source of truth. Discovery hands it JSON through
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -24,8 +25,38 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class ProductionDatabaseError(RuntimeError):
+    """A non-production caller tried to open the real database."""
+
+
+def _guard_production(p: Path) -> None:
+    """Refuse to open the production database from a context that must not.
+
+    `demo` used to default to it and quietly seeded three fixture companies into
+    real data, shifting every account id. That was found by accident, which is
+    the wrong way to find it. Anything running under pytest, or anything that
+    sets OUTBOUND_NO_PROD_DB, now fails loudly instead.
+    """
+    try:
+        if p.resolve() != default_db_path().resolve():
+            return
+    except OSError:
+        return
+    reason = None
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        reason = "running under pytest"
+    elif os.environ.get("OUTBOUND_NO_PROD_DB"):
+        reason = "OUTBOUND_NO_PROD_DB is set"
+    if reason:
+        raise ProductionDatabaseError(
+            f"refusing to open the production database at {p} ({reason}). "
+            f"Pass an explicit --db / path to a scratch database instead."
+        )
+
+
 def connect(path: Path | str | None = None) -> sqlite3.Connection:
     p = Path(path) if path else default_db_path()
+    _guard_production(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(p, isolation_level=None)  # explicit transactions
     conn.row_factory = sqlite3.Row

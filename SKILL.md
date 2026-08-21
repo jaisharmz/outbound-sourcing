@@ -68,7 +68,8 @@ reimplements. Run them from the skill directory with the venv active.
 | `outbound render --step <id> [--email <addr>]` | Render one email exactly as it would send. |
 | `outbound cc-resolve --domain --campaign --step` | Show which CC rule wins and why. |
 | `outbound suppress add <value> --kind email\|domain\|company` | Permanent, global. |
-| `outbound demo` | End-to-end on fixtures through the console mailbox. No network. |
+| `outbound demo` | End-to-end on fixtures through the console mailbox. No network, scratch DB. |
+| `outbound harvest-github --prefilter pass_builds` | Read addresses off public commits, infer each domain's email pattern. Needs `GITHUB_TOKEN`. |
 | `outbound auth --mailbox <id>` | OAuth for one mailbox. Names the exact failure mode. |
 | `outbound test-email --mailbox <id> --step <id>` \| `--all-mailboxes` \| `--to <addr>` | Real email to `test_recipient`, then prints outgoing **and delivered** headers with SPF/DKIM/DMARC verdicts. |
 

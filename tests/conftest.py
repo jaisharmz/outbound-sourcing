@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
@@ -12,6 +13,10 @@ from scripts.db import connect, migrate
 
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE = ROOT / "config.example"
+
+# Belt and braces alongside the PYTEST_CURRENT_TEST check in db.connect: no test
+# may reach the production database, whatever it forgets to pass.
+os.environ["OUTBOUND_NO_PROD_DB"] = "1"
 
 
 @pytest.fixture
