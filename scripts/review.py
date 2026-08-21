@@ -31,7 +31,8 @@ COLUMNS = [
 
 
 def rows(conn: sqlite3.Connection, campaign: str | None = None) -> list[sqlite3.Row]:
-    where = ["c.approved = 0", "a.status NOT IN ('excluded','excluded_region','merged')"]
+    where = ["c.approved = 0", "c.sendable = 1", "a.validation_run = 0",
+             "a.status NOT IN ('excluded','excluded_region','merged')"]
     params: list = []
     if campaign:
         where.append("c.campaign = ?")

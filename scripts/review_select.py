@@ -34,7 +34,7 @@ class Preview:
 def choose(conn: sqlite3.Connection, *, campaign: str | None = None,
            limit: int = 5) -> list[Preview]:
     """Pick contacts spanning the axes, then fill from whatever is left."""
-    where = ["approved = 0"]
+    where = ["approved = 0", "sendable = 1"]
     params: list = []
     if campaign:
         where.append("campaign = ?")

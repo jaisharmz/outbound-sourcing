@@ -4,9 +4,14 @@
 titles:
   - research scientist
   - research engineer
+  - member of technical staff
   - machine learning engineer
+  - principal engineer
+  - staff engineer
   - head of ai
+  - head of ml
   - founder
+  - co-founder
   - cto
 title_excludes:
   - recruiter
@@ -52,4 +57,8 @@ auto_drop_reason_patterns:
   - solely as an affiliation string
 
 max_contacts_per_company: 3
+# Not lowered. Below this an inferred address is a guess at a domain with no
+# convention, and names diverge from addresses even where a pattern looks clean
+# -- Skydio's Matias Varnum commits as matias.christensen@. Twelve good emails
+# beat forty with bounces.
 min_confidence: 0.5
