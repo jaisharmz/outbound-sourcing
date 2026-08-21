@@ -338,8 +338,23 @@ def read_run_json(run_dir: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+# Two kinds of URL, and confusing them is how a company ends up with the wrong
+# sending domain.
+#
+#   DECLARED   the source says "this is the company's website" -- a fund
+#              portfolio entry, a `Name,domain` line in a list file. Take it.
+#   CITED      the source offers it as evidence for a claim -- a landscape
+#              `url`, which for Google DeepMind is an arXiv abstract. Screen it.
+#
+# The aggregator screen belongs only on the cited path. Running it on a declared
+# field discards Medium and Substack for being on the blogging-platform list.
+
+
 def declared_domain(url: str | None) -> str | None:
-    """The registrable domain of a URL a source declares to be the company's own."""
+    """Registrable domain of a URL the source declares to be the company's own.
+
+    No aggregator screen: the source already asserted whose site this is.
+    """
     if not url or not isinstance(url, str):
         return None
     match = re.match(r"^https?://([^/\s:]+)", url.strip())
@@ -348,8 +363,10 @@ def declared_domain(url: str | None) -> str | None:
     return registrable_domain(match.group(1).lower().removeprefix("www."))
 
 
-def domain_candidate(url: str | None) -> tuple[str | None, str]:
+def domain_from_cited_url(url: str | None) -> tuple[str | None, str]:
     """Derive a sending domain from an evidence URL, or refuse to.
+
+    Only for URLs a source *cited*, never for one it declared. See above.
 
     Returns (domain, confidence). Confidence is never better than 'candidate':
     the URL was cited as evidence for a claim, not offered as a homepage.
@@ -405,7 +422,7 @@ def from_industry_run(config: Config, run_dir: Path, tiers: set[str]) -> tuple[l
         if tiers and tier not in tiers:
             report.skipped_tier.append(f"{org['name']} ({tier or 'no tier'})")
             continue
-        domain, confidence = domain_candidate(org.get("url"))
+        domain, confidence = domain_from_cited_url(org.get("url"))
         if not domain:
             report.no_domain.append(str(org["name"]))
         sub = org.get("subproblems")

@@ -42,6 +42,16 @@ KEYWORDS_V1 = (
 RULESET_V1 = "keywords_v1"
 RULESET_LLM = "llm_v1"
 
+# `pass` is split by depth because the two need different copy. A company that
+# trains its own models and publishes is a different conversation from one that
+# ships a feature on somebody else's API, and one blended verdict makes the two
+# reply rates unreadable.
+VALID_VERDICTS = ("pass_builds", "pass_applies", "fail", "unknown")
+PASS_VERDICTS = ("pass_builds", "pass_applies")
+DEPTH = {"pass_builds": "builds", "pass_applies": "applies"}
+VALID_EVIDENCE = ("description", "search")
+URL_OR_DOMAIN = re.compile(r"https?://\S+|\b[a-z0-9][a-z0-9-]*\.[a-z]{2,}\b", re.I)
+
 _COMPILED = [re.compile(k, re.I) for k in KEYWORDS_V1]
 
 
@@ -61,7 +71,8 @@ def judge(name: str, description: str | None, extra: str | None = None) -> Prefi
         # an engineering org.
         return PrefilterResult("unknown", RULESET_V1, text)
     matched = [c.pattern for c in _COMPILED if c.search(text)]
-    return PrefilterResult("pass" if matched else "fail", RULESET_V1, text, matched)
+    # keywords_v1 cannot tell depth apart; only the classifier can.
+    return PrefilterResult("pass_applies" if matched else "fail", RULESET_V1, text, matched)
 
 
 def apply(conn: sqlite3.Connection, *, fund: str | None = None,
@@ -79,7 +90,7 @@ def apply(conn: sqlite3.Connection, *, fund: str | None = None,
         f"SELECT id, name, what FROM accounts WHERE {' AND '.join(where)}", tuple(params)
     ).fetchall()
 
-    counts = {"pass": 0, "fail": 0, "unknown": 0}
+    counts = {k: 0 for k in VALID_VERDICTS}
     for r in rows:
         res = judge(r["name"], r["what"])
         counts[res.verdict] += 1
@@ -94,12 +105,14 @@ def apply(conn: sqlite3.Connection, *, fund: str | None = None,
 
 def summary(counts: dict[str, int]) -> str:
     total = sum(counts.values()) or 1
+    passes = sum(counts.get(k, 0) for k in PASS_VERDICTS) + counts.get("pass", 0)
     lines = [f"stage 0 over {total} accounts:"]
-    for k in ("pass", "fail", "unknown"):
-        lines.append(f"  {k:<8} {counts.get(k,0):>4}  ({100*counts.get(k,0)/total:.0f}%)")
+    for k in ("pass", "pass_builds", "pass_applies", "fail", "unknown"):
+        if counts.get(k):
+            lines.append(f"  {k:<13} {counts[k]:>4}  ({100*counts[k]/total:.0f}%)")
     lines.append(
-        f"  full research budget would go to {counts.get('pass',0)} of {total} "
-        f"({100*counts.get('pass',0)/total:.0f}%)"
+        f"  full research budget would go to {passes} of {total} "
+        f"({100*passes/total:.0f}%)"
     )
     if counts.get("unknown"):
         lines.append(
@@ -124,7 +137,8 @@ def summary(counts: dict[str, int]) -> str:
 
 
 def export_batch(conn, *, fund: str | None = None, limit: int = 200,
-                 include: tuple[str, ...] = ("fail", "unknown")) -> list[dict]:
+                 offset: int = 0,
+                 include: tuple[str, ...] = ("fail", "unknown", "pass_applies")) -> list[dict]:
     """Companies needing a judgment, as a batch to hand to a classifier."""
     where = ["status != 'excluded'"]
     params: list = []
@@ -132,25 +146,37 @@ def export_batch(conn, *, fund: str | None = None, limit: int = 200,
         where.append("fund = ?")
         params.append(fund)
     marks = ",".join("?" * len(include))
-    where.append(f"(prefilter IS NULL OR prefilter IN ({marks}))")
+    # An `unknown` is unresolved by definition, so it comes back when better
+    # evidence arrives -- even if the classifier is what produced it.
+    where.append(
+        f"(prefilter IS NULL OR prefilter = 'unknown'"
+        f" OR (prefilter_rule != '{RULESET_LLM}' AND prefilter IN ({marks})))"
+    )
     params.extend(include)
     rows = conn.execute(
-        f"SELECT id, name, domain, what FROM accounts WHERE {' AND '.join(where)}"
-        f" ORDER BY id LIMIT ?", (*params, limit)
+        f"SELECT id, name, domain, what, homepage_text, homepage_fetch_status"
+        f" FROM accounts WHERE {' AND '.join(where)}"
+        f" ORDER BY id LIMIT ? OFFSET ?", (*params, limit, offset)
     ).fetchall()
     return [
-        {"id": r["id"], "name": r["name"], "domain": r["domain"],
-         "description": r["what"] or ""}
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "domain": r["domain"],
+            # The company's own words, which beat the investor's blurb.
+            "homepage": (r["homepage_text"] or "")[:1200],
+            "homepage_status": r["homepage_fetch_status"],
+            "blurb": r["what"] or "",
+        }
         for r in rows
     ]
 
 
-VALID_VERDICTS = ("pass", "fail", "unknown")
 
 
 def import_verdicts(conn, verdicts: list[dict], rule: str = RULESET_LLM) -> dict[str, int]:
     """Load classifier output. Rejects anything malformed rather than guessing."""
-    counts = {"pass": 0, "fail": 0, "unknown": 0}
+    counts = {k: 0 for k in VALID_VERDICTS}
     for v in verdicts:
         if not isinstance(v, dict):
             raise ValueError(f"verdict is not an object: {v!r}")
@@ -162,14 +188,42 @@ def import_verdicts(conn, verdicts: list[dict], rule: str = RULESET_LLM) -> dict
                 f"id {vid}: verdict {verdict!r} is not one of {VALID_VERDICTS}"
             )
         reason = str(v.get("reason") or "")[:500]
-        if verdict == "pass" and not reason:
-            raise ValueError(f"id {vid}: a pass needs a reason naming the evidence")
+        evidence = v.get("evidence")
+
+        if verdict in PASS_VERDICTS:
+            if not reason:
+                raise ValueError(f"id {vid}: a pass needs a reason naming the evidence")
+            if evidence not in VALID_EVIDENCE:
+                raise ValueError(
+                    f"id {vid}: a pass needs evidence to be one of {VALID_EVIDENCE}, "
+                    f"got {evidence!r}"
+                )
+            # A search can return a different company with the same name -- three
+            # of sixteen did in one hand-checked sample. A pass grounded in the
+            # wrong Mosaic spends a full research budget on a company that is not
+            # in the portfolio, so search-grounded passes must cite where they
+            # looked.
+            if evidence == "search" and not URL_OR_DOMAIN.search(reason):
+                raise ValueError(
+                    f"id {vid}: a search-grounded pass must cite a URL or the company's "
+                    f"domain in its reason, so the result can be checked against the "
+                    f"right company. Got: {reason!r}"
+                )
+
         counts[verdict] += 1
         conn.execute(
             "UPDATE accounts SET prefilter = ?, prefilter_rule = ?, prefilter_evidence = ?,"
-            " prefilter_at = ? WHERE id = ?",
-            (verdict, rule, reason, utcnow(), vid),
+            " prefilter_at = ?, ai_depth = ? WHERE id = ?",
+            (verdict, rule, reason, utcnow(), DEPTH.get(verdict), vid),
         )
+        # Fund portfolio companies are startups; tier is what routes a campaign.
+        # ai_depth stays separate so the two pitches report apart.
+        if verdict in PASS_VERDICTS:
+            conn.execute(
+                "UPDATE accounts SET tier = COALESCE(tier, 'startup'),"
+                " campaign = COALESCE(campaign, 'startup') WHERE id = ? AND fund IS NOT NULL",
+                (vid,),
+            )
     log_event(conn, "info", "prefilter.import", rule=rule, **counts)
     return counts
 
@@ -178,20 +232,51 @@ CLASSIFY_BRIEF = """\
 For each company below decide whether it plausibly has people doing AI/ML research
 or ML engineering -- someone whose job involves building or training models.
 
+Each entry carries two texts. `homepage` is the company's own words and is the
+better evidence. `blurb` is its investor's one-line description, which is written
+to position a portfolio and routinely omits what the company is built out of --
+Kaedim's blurb was "game-ready on-demand 3D assets" while its own homepage opens
+"AI-powered 3D asset creation".
+
+`homepage_status` says whether the homepage produced usable text. Anything other
+than `ok` means the site did not render for us, which is a fact about the fetch
+and not about the company: judge from the blurb alone, and prefer `unknown`.
+
 Judge the company, not the sentence. The text is marketing copy written to sell a
 product, not to describe an engineering org. A company whose entire business is an
 ML model can describe itself as "game-ready on-demand 3D assets" and never use the
 word AI. Consider what the product must be built out of.
 
-Say `pass` when there plausibly is such a function, `fail` when there plausibly is
-not, `unknown` when the text does not support either. Prefer `unknown` over a
-confident `fail`: a wrongly dropped company leaves no evidence that it was wrongly
-dropped, while a wrongly kept one costs one research budget.
+Verdicts:
+
+  pass_builds   trains or fine-tunes its own models, has research staff, or
+                publishes. Kaedim (image-to-3D reconstruction) and Santa Ana Bio
+                (ML models for immuno-oncology, published in Nature) are this.
+  pass_applies  ships AI features built on somebody else's models. Valon
+                (LLM integration for mortgage servicing) and Tako (applied AI on
+                a payroll product) are this.
+  fail          plausibly no such function.
+  unknown       the text does not support either.
+
+Prefer `unknown` over a confident `fail`: a wrongly dropped company leaves no
+evidence that it was wrongly dropped, while a wrongly kept one costs one research
+budget. But do not reach for `unknown` when the company is simply outside the
+field -- a sourdough delivery service is a `fail`, not an ambiguity.
 
 A research function in an unrelated field is a `fail` for our purposes -- a
 zero-knowledge cryptography team is a research team, but not one that wants an AI
 collaboration.
 
-Return JSON: [{"id": <int>, "verdict": "pass"|"fail"|"unknown", "reason": "<what in
-the text or in what you know about the company supports this>"}]
+Return JSON, one object per company:
+
+  {"id": <int>,
+   "verdict": "pass_builds" | "pass_applies" | "fail" | "unknown",
+   "evidence": "description" | "search",     // required on a pass
+   "reason": "<what supports this>"}
+
+`evidence: "description"` means the supplied text was enough. `evidence: "search"`
+means you looked the company up -- and then the reason must cite a URL or the
+company's own domain, because a search on a common name returns a different
+company with that name often enough to matter. A pass grounded in the wrong
+Mosaic spends a full research budget on a company that is not in the portfolio.
 """

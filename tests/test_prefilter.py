@@ -20,7 +20,8 @@ def seed(conn, rows):
 
 
 def test_keyword_pass_and_fail():
-    assert judge("X", "We train foundation models").verdict == "pass"
+    # keywords_v1 cannot tell depth apart, so its pass is the conservative one.
+    assert judge("X", "We train foundation models").verdict == "pass_applies"
     assert judge("Y", "Artisanal sourdough delivered weekly").verdict == "fail"
 
 
@@ -34,7 +35,7 @@ def test_verdict_records_the_text_it_judged(conn):
     seed(conn, [("Alpha", "Computer vision for warehouses")])
     apply(conn)
     row = conn.execute("SELECT * FROM accounts WHERE name='Alpha'").fetchone()
-    assert row["prefilter"] == "pass"
+    assert row["prefilter"] == "pass_applies"
     assert row["prefilter_rule"] == RULESET_V1
     assert "warehouses" in row["prefilter_evidence"]
     assert row["prefilter_at"]
@@ -45,9 +46,11 @@ def test_rerunnable_without_refetching(conn):
     seed(conn, [("Beta", "Game-ready 3D assets")])
     apply(conn)
     assert conn.execute("SELECT prefilter FROM accounts").fetchone()[0] == "fail"
-    import_verdicts(conn, [{"id": 1, "verdict": "pass", "reason": "image-to-3D is an ML model"}])
-    row = conn.execute("SELECT prefilter, prefilter_rule FROM accounts").fetchone()
-    assert (row["prefilter"], row["prefilter_rule"]) == ("pass", RULESET_LLM)
+    import_verdicts(conn, [{"id": 1, "verdict": "pass_builds", "evidence": "description",
+                            "reason": "image-to-3D reconstruction is itself an ML model"}])
+    row = conn.execute("SELECT prefilter, prefilter_rule, ai_depth FROM accounts").fetchone()
+    assert (row["prefilter"], row["prefilter_rule"], row["ai_depth"]) == (
+        "pass_builds", RULESET_LLM, "builds")
 
 
 def test_a_fail_is_a_verdict_not_a_deletion(conn):
@@ -63,15 +66,29 @@ def test_only_unjudged_skips_already_judged(conn):
     apply(conn, only_unjudged=True)
     assert conn.execute("SELECT prefilter FROM accounts WHERE name='Eps'").fetchone()[0] == "fail"
     apply(conn, only_unjudged=False)
-    assert conn.execute("SELECT prefilter FROM accounts WHERE name='Eps'").fetchone()[0] == "pass"
+    assert conn.execute(
+        "SELECT prefilter FROM accounts WHERE name='Eps'").fetchone()[0] == "pass_applies"
 
 
-def test_export_batch_covers_fail_and_unknown(conn):
+def test_export_batch_covers_everything_the_classifier_has_not_seen(conn):
+    """keywords_v1 verdicts are all provisional, including its passes."""
     seed(conn, [("A", "We train models"), ("B", "Sourdough"), ("C", None)])
     apply(conn)
     batch = export_batch(conn, fund="testfund")
-    assert {b["name"] for b in batch} == {"B", "C"}
-    assert all("id" in b and "description" in b for b in batch)
+    assert {b["name"] for b in batch} == {"A", "B", "C"}
+    assert all({"id", "homepage", "blurb", "homepage_status"} <= set(b) for b in batch)
+
+
+def test_export_batch_carries_the_company_s_own_words(conn):
+    """The homepage beats the investor's blurb, which is written to position a
+    portfolio and routinely omits what the company is built out of."""
+    seed(conn, [("A", "Game-ready on-demand 3D assets")])
+    conn.execute("UPDATE accounts SET homepage_text = ?, homepage_fetch_status = 'ok'",
+                 ("AI-powered 3D asset creation service",))
+    batch = export_batch(conn, fund="testfund")
+    assert batch[0]["homepage"].startswith("AI-powered")
+    assert batch[0]["blurb"] == "Game-ready on-demand 3D assets"
+    assert batch[0]["homepage_status"] == "ok"
 
 
 def test_import_rejects_an_unknown_verdict(conn):
@@ -86,7 +103,7 @@ def test_import_rejects_a_pass_with_no_reason(conn):
     seed(conn, [("A", "Sourdough")])
     apply(conn)
     with pytest.raises(ValueError, match="needs a reason"):
-        import_verdicts(conn, [{"id": 1, "verdict": "pass"}])
+        import_verdicts(conn, [{"id": 1, "verdict": "pass_builds"}])
 
 
 def test_import_rejects_a_missing_id(conn):
@@ -101,5 +118,43 @@ def test_excluded_accounts_are_not_judged(conn):
 
 
 def test_summary_reports_the_pass_share():
-    out = summary({"pass": 2, "fail": 6, "unknown": 2})
+    out = summary({"pass_builds": 1, "pass_applies": 1, "fail": 6, "unknown": 2})
     assert "20%" in out and "10 accounts" in out
+
+
+def test_pass_requires_a_declared_evidence_source(conn):
+    seed(conn, [("A", "Sourdough")])
+    apply(conn)
+    with pytest.raises(ValueError, match="evidence to be one of"):
+        import_verdicts(conn, [{"id": 1, "verdict": "pass_builds", "reason": "they do ML"}])
+
+
+def test_search_grounded_pass_must_cite_where_it_looked(conn):
+    """Three of sixteen searches in one hand-checked sample returned a different
+    company with the same name."""
+    seed(conn, [("Mosaic", "Construction technology")])
+    apply(conn)
+    with pytest.raises(ValueError, match="must cite a URL or the company"):
+        import_verdicts(conn, [{"id": 1, "verdict": "pass_builds", "evidence": "search",
+                                "reason": "they have a data science team"}])
+    import_verdicts(conn, [{"id": 1, "verdict": "pass_builds", "evidence": "search",
+                            "reason": "mosaic.us careers page lists ML engineers"}])
+    assert conn.execute("SELECT prefilter FROM accounts").fetchone()[0] == "pass_builds"
+
+
+def test_description_grounded_pass_needs_no_url(conn):
+    seed(conn, [("A", "We train foundation models")])
+    apply(conn)
+    import_verdicts(conn, [{"id": 1, "verdict": "pass_builds", "evidence": "description",
+                            "reason": "says it trains foundation models"}])
+    assert conn.execute("SELECT ai_depth FROM accounts").fetchone()[0] == "builds"
+
+
+def test_depth_is_carried_and_routes_a_campaign(conn):
+    seed(conn, [("A", "Payroll with AI features")])
+    conn.execute("UPDATE accounts SET fund='testfund'")
+    apply(conn)
+    import_verdicts(conn, [{"id": 1, "verdict": "pass_applies", "evidence": "description",
+                            "reason": "ships AI features on third-party models"}])
+    row = conn.execute("SELECT ai_depth, tier, campaign FROM accounts").fetchone()
+    assert (row["ai_depth"], row["tier"], row["campaign"]) == ("applies", "startup", "startup")

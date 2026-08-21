@@ -12,7 +12,7 @@ import pytest
 
 from scripts.discover_companies import (
     DiscoveryReport,
-    domain_candidate,
+    domain_from_cited_url,
     from_industry_run,
     from_name_list,
     read_run_json,
@@ -43,17 +43,17 @@ def campaigns(config_root):
 
 
 def test_homepage_url_yields_a_domain():
-    assert domain_candidate("https://homepagestartup.test/") == ("homepagestartup.test", "candidate")
+    assert domain_from_cited_url("https://homepagestartup.test/") == ("homepagestartup.test", "candidate")
 
 
 def test_www_is_stripped():
-    assert domain_candidate("https://www.nvidia.com/")[0] == "nvidia.com"
+    assert domain_from_cited_url("https://www.nvidia.com/")[0] == "nvidia.com"
 
 
 def test_arxiv_url_yields_no_domain():
     """Google DeepMind's landscape url is an arXiv abstract. Taking arxiv.org as
     its sending domain would mail a stranger at the wrong company."""
-    assert domain_candidate("https://arxiv.org/abs/2501.00663") == (None, "aggregator")
+    assert domain_from_cited_url("https://arxiv.org/abs/2501.00663") == (None, "aggregator")
 
 
 @pytest.mark.parametrize("url", [
@@ -65,17 +65,17 @@ def test_arxiv_url_yields_no_domain():
     "https://semanticscholar.org/paper/x",
 ])
 def test_aggregator_urls_yield_no_domain(url):
-    assert domain_candidate(url)[0] is None
+    assert domain_from_cited_url(url)[0] is None
 
 
 def test_google_itself_is_not_an_aggregator():
     """google.com is a legitimate target; docs.google.com is not evidence about it."""
-    assert domain_candidate("https://cloud.google.com/tpu")[0] == "google.com"
+    assert domain_from_cited_url("https://cloud.google.com/tpu")[0] == "google.com"
 
 
 def test_missing_or_malformed_url():
-    assert domain_candidate(None) == (None, "unknown")
-    assert domain_candidate("not a url") == (None, "unknown")
+    assert domain_from_cited_url(None) == (None, "unknown")
+    assert domain_from_cited_url("not a url") == (None, "unknown")
 
 
 # ------------------------------------------------------------ parsing
@@ -356,3 +356,25 @@ def test_frontmatter_fallback_marks_records_as_needing_a_tier(campaigns, tmp_pat
     _, report = from_industry_run(campaigns, dst, TIERS)
     assert report.no_tier
     assert "cannot enroll" in report.summary()
+
+
+def test_declared_domains_bypass_the_aggregator_screen():
+    """A fund declares the company's own site, so the screen must not run: it
+    exists for cited evidence URLs and would discard Medium and Substack."""
+    from scripts.discover_companies import declared_domain
+    assert declared_domain("https://medium.com") == "medium.com"
+    assert declared_domain("https://substack.com/") == "substack.com"
+    assert domain_from_cited_url("https://medium.com")[0] is None
+
+
+def test_only_cited_urls_are_screened():
+    """Structural check: nothing may route a declared field through the screen."""
+    import inspect
+    from scripts import discover_companies as dc
+
+    src = inspect.getsource(dc)
+    for line in src.splitlines():
+        if "domain_from_cited_url(" in line and "def " not in line:
+            assert "org.get(" in line or "cited" in line.lower(), (
+                f"aggregator screen applied to something that may be declared: {line.strip()}"
+            )

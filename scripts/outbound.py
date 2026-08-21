@@ -168,6 +168,65 @@ def accounts_cmd(
     typer.echo(f"\n  {len(rows)} shown of {total}")
 
 
+# ------------------------------------------------------------------ homepages
+
+
+@app.command("homepages")
+def homepages_cmd(
+    fund: Optional[str] = typer.Option(None, "--fund"),
+    refetch: bool = typer.Option(False, "--refetch", help="include already-fetched rows"),
+    workers: int = typer.Option(8, "--workers"),
+    limit: Optional[int] = typer.Option(None, "--limit"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Fetch each account's homepage and store what the company says about itself.
+
+    Better evidence than an investor's blurb, and immune to the name collisions a
+    search hits, because the domain is already known. Stored for every account so
+    stage 0 can be re-judged later without re-fetching.
+    """
+    from . import homepages as hp
+
+    conn = open_db(db)
+    where = ["domain IS NOT NULL", "status != 'excluded'"]
+    params: list = []
+    if fund:
+        where.append("fund = ?")
+        params.append(fund)
+    if not refetch:
+        where.append("homepage_fetch_status IS NULL")
+    sql = f"SELECT id, domain FROM accounts WHERE {' AND '.join(where)} ORDER BY id"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = [(r["id"], r["domain"]) for r in conn.execute(sql, tuple(params))]
+    if not rows:
+        typer.echo("(nothing to fetch)")
+        return
+
+    typer.echo(f"fetching {len(rows)} homepages with {workers} workers...")
+    results = hp.fetch_many(rows, workers=workers)
+    counts: dict[str, int] = {}
+    with transaction(conn):
+        for aid, res in results.items():
+            counts[res.status] = counts.get(res.status, 0) + 1
+            conn.execute(
+                "UPDATE accounts SET homepage_url = ?, homepage_text = ?,"
+                " homepage_fetch_status = ?, homepage_fetched_at = ? WHERE id = ?",
+                (res.url, res.text or None, res.status, utcnow(), aid),
+            )
+    total = sum(counts.values())
+    typer.echo(f"\n{total} fetched:")
+    for k in ("ok", "js_shell", "holding", "blocked", "dead"):
+        if counts.get(k):
+            typer.echo(f"  {k:<9} {counts[k]:>4}  ({100*counts[k]/total:.0f}%)")
+    unreachable = total - counts.get("ok", 0)
+    typer.secho(
+        f"\n  {unreachable} produced no usable text. Those are `unknown` for stage 0, "
+        f"never `fail` -- a site that did not render is not a company without an ML team.",
+        fg=typer.colors.YELLOW,
+    )
+
+
 # ------------------------------------------------------------------ prefilter
 
 
