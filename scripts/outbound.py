@@ -985,7 +985,7 @@ def traverse_company(
     from .openalex import Client
 
     conn = open_db(db)
-    client = Client(mailto="jaisharmaus@gmail.com")
+    client = Client(mailto=_config(None).campaign.contact_email or None)
     typer.secho(f"\n=== traverse: {name} ===", fg=typer.colors.CYAN)
     with transaction(conn):
         oid, people = traverse.seed_company(conn, client, name, run)

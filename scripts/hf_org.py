@@ -31,6 +31,18 @@ import urllib.request
 
 from . import meter
 
+
+def _contact() -> str:
+    """The mailto these APIs ask for, from config rather than baked in."""
+    try:
+        from pathlib import Path as _P
+
+        from .config import Config
+        addr = Config(_P(__file__).resolve().parent.parent / "config").campaign.contact_email
+        return f"mailto:{addr}" if addr else "no contact configured"
+    except Exception:
+        return "no contact configured"
+
 API = "https://huggingface.co/api"
 
 # Below this many members, a *negative* result means nothing. Mistral AI's org
@@ -39,7 +51,7 @@ API = "https://huggingface.co/api"
 # five Mistral candidates as departed. Positives stay trustworthy at any size:
 # being listed is evidence regardless of how many others are.
 MIN_ROSTER_FOR_NEGATIVES = 50
-UA = {"User-Agent": "outbound-sourcing/1.0 (mailto:jaisharmaus@gmail.com)"}
+UA = {"User-Agent": f"outbound-sourcing/1.0 ({_contact()})"}
 
 # Company -> HF org slug. The slug is rarely the company name.
 ORG_SLUGS = {

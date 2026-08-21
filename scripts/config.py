@@ -192,6 +192,11 @@ class Campaign(Strict):
     inter_send_delay: InterSendDelay = Field(default_factory=InterSendDelay)
     verification: Verification = Field(default_factory=Verification)
     discovery: Discovery = Field(default_factory=Discovery)
+    # Sent as the mailto in User-Agent headers to OpenAlex, arXiv and Crossref.
+    # Those APIs ask for a contact so they can reach whoever is making the
+    # requests; hardcoding one means every installed copy identifies itself as
+    # the person who wrote the tool.
+    contact_email: str = ""
     attachments_root: str
     # Wire size, not disk size: base64 inflates by 4/3 and that is what a
     # gateway measures. Many corporate gateways reject inbound above 10 MB and

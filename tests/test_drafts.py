@@ -204,10 +204,13 @@ def test_reply_to_survives_a_from_rewrite():
 
     from scripts.config import Config
 
+    # Reply-To is the load-bearing half: Gmail rewrites From when the address is
+    # not a verified alias, but never touches Reply-To. The From address itself
+    # is an operator choice and is deliberately not pinned here.
     cfg = Config(Path(__file__).resolve().parent.parent / "config")
     mb = cfg.mailboxes.get("gmail-smtp")
-    assert mb.reply_to == "jais@berkeley.edu"
-    assert mb.from_.address == "jais@berkeley.edu"
+    assert mb.reply_to and "@" in mb.reply_to
+    assert mb.from_.address and "@" in mb.from_.address
 
 
 def test_the_send_gate_blocks_a_rewritten_from(tmp_path, monkeypatch):
@@ -222,15 +225,18 @@ def test_the_send_gate_blocks_a_rewritten_from(tmp_path, monkeypatch):
 
     conn = open_db(str(tmp_path / "g.db"))
     cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    # Derived from config, not hardcoded: the configured From is an operator
+    # choice that changes, and a test that pins it fails for the wrong reason.
+    configured = cfg.mailboxes.get("gmail-smtp").from_.address
     conn.execute(
         "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash,"
         " to_addr, ok, headers, sent_at) VALUES ('gmail-smtp','step1_initial',"
         " 'startup','h','x@y.test',1,?,'')",
-        ("From: Jai Sharma <jais@berkeley.edu>\n\n--- delivered ---\n"
-         "From: Jai Sharma <jaisharmaus@gmail.com>\n",))
+        (f"From: Jai Sharma <{configured}>\n\n--- delivered ---\n"
+         "From: Someone Else <rewritten@elsewhere.test>\n",))
     conn.commit()
     problems = gate(conn, cfg, "startup", "gmail-smtp")
-    assert any("delivered as jaisharmaus@gmail.com" in p for p in problems)
+    assert any("delivered as rewritten@elsewhere.test" in p for p in problems)
     assert any("Send mail as" in p for p in problems)
 
 
@@ -243,11 +249,12 @@ def test_the_gate_passes_when_from_survives(tmp_path):
 
     conn = open_db(str(tmp_path / "g2.db"))
     cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    configured = cfg.mailboxes.get("gmail-smtp").from_.address
     conn.execute(
         "INSERT INTO test_sends (mailbox_id, step_id, campaign, template_hash,"
         " to_addr, ok, headers, sent_at) VALUES ('gmail-smtp','step1_initial',"
         " 'startup','h','x@y.test',1,?,'')",
-        ("From: Jai Sharma <jais@berkeley.edu>\n\n--- delivered ---\n"
-         "From: Jai Sharma <jais@berkeley.edu>\n",))
+        (f"From: Jai Sharma <{configured}>\n\n--- delivered ---\n"
+         f"From: Jai Sharma <{configured}>\n",))
     conn.commit()
     assert not any("delivered as" in p for p in gate(conn, cfg, "startup", "gmail-smtp"))

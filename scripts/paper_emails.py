@@ -36,7 +36,19 @@ from pathlib import Path
 
 from . import meter
 
-UA = {"User-Agent": "outbound-sourcing/1.0 (mailto:jaisharmaus@gmail.com)"}
+
+def _contact() -> str:
+    """The mailto these APIs ask for, from config rather than baked in."""
+    try:
+        from pathlib import Path as _P
+
+        from .config import Config
+        addr = Config(_P(__file__).resolve().parent.parent / "config").campaign.contact_email
+        return f"mailto:{addr}" if addr else "no contact configured"
+    except Exception:
+        return "no contact configured"
+
+UA = {"User-Agent": f"outbound-sourcing/1.0 ({_contact()})"}
 ARXIV = "http://export.arxiv.org/api/query"
 SEARCH_DELAY = 3.0      # arXiv's requested rate
 
