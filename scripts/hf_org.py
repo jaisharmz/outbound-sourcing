@@ -104,3 +104,13 @@ def check(company: str, name: str) -> tuple[bool | None, str]:
                       f"person")
     return False, (f"not in the {slug!r} Hugging Face org member list ({len(roster)} "
                    f"members), so the affiliation is likely out of date")
+
+
+# Extended roster, added as the loop was pointed at more companies.
+ORG_SLUGS.update({
+    "modal labs": "modal-labs", "replicate": "replicate",
+    "predibase": "predibase", "anyscale": "anyscale",
+    "langchain": "langchain-ai", "weights & biases": "wandb",
+    "chroma": "chroma-core", "llamaindex": "llamaindex",
+    "unsloth": "unsloth", "vllm project": "vllm-project",
+})
