@@ -13,6 +13,12 @@ dependencies = [
     "dnspython>=2.6",
 ]
 
+# The CLI's own guidance says "Run: outbound test-email ...". That string is
+# printed by gates and error paths, so it needs to be a real command rather than
+# shorthand for `python -m scripts.outbound`.
+[project.scripts]
+outbound = "scripts.outbound:app"
+
 [project.optional-dependencies]
 gmail = [
     "google-api-python-client>=2.130",

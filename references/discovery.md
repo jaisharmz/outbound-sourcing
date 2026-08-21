@@ -184,3 +184,48 @@ Three defences, all cheap:
 No special-casing. A company you happen to know well gets the same brief, the same
 budget, and the same evidence standard as one you have never heard of — otherwise the
 quality of the output tracks your prior familiarity rather than what is actually findable.
+
+## Design intent: best-first traversal (not built)
+
+The traversal currently expands breadth-first from seeds and scores afterwards.
+The intended end state is best-first: `graph.score_node` becomes the key of a
+priority queue that *drives* expansion rather than ranking its output, so budget
+goes to the most promising frontier node at each step instead of being spread
+evenly. The scoring function already exists and already combines the right
+signals -- `path_count` (proximity), recency, topic overlap against seed topics,
+reachability, seniority -- so this is mostly plumbing: replace the expansion
+loop's queue with a heap, re-score the frontier after each expansion, and stop
+on marginal-yield collapse rather than on a hop limit.
+
+**Deliberately deferred, and the reason is a measurement rather than a
+preference.** The run on Together AI, Fireworks AI and Baseten (2026-08-21)
+found that Together's 39 entry points came from the affiliation query, not from
+the graph, and that one-hop expansion returned the surrounding research
+community rather than more people at the company. Fireworks returned 3 and
+Baseten 1 because they barely publish. A better traversal *policy* does not help
+a graph with nothing to traverse -- it allocates a budget better across a
+frontier that is either already exhausted or full of the wrong people.
+
+Revisit when seeds are labs and universities rather than companies. There the
+frontier is genuinely large, publication density is high, and expansion order
+starts to matter.
+
+## The number to attack next: contactability
+
+The same run: **39 entry points at Together AI produced 5 findable addresses,
+13%.** That loss is larger than anything better sourcing can recover -- doubling
+entry points at a 13% conversion is worth less than moving 13% to 30%.
+
+The breakdown of the 34 misses is the thing to measure, because each bucket has
+a different fix and they are not equally tractable:
+
+| bucket | likely fix |
+| --- | --- |
+| no personal page found | more URL shapes; lab pages; institutional directories |
+| page found, no address on it | read the paper PDF's first page, where affiliation emails live |
+| name too common to resolve | needs an id-based lookup, not a guessed URL |
+| pattern unknown for the domain | GitHub domain-pattern learning, already built |
+
+`person_pages.find` already records `tried` and returns a status that separates
+`not_found` from `no_email`, so the first two buckets are countable now without
+new instrumentation.
