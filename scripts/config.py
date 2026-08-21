@@ -118,6 +118,10 @@ class ICP(Strict):
     # Traversal surfaces a research group together, and four people from one lab
     # will compare notes. Capped separately from company.
     max_contacts_per_lab: int = 6
+    # Scan each company's founders/leadership pages and drop anyone listed.
+    # On by default: the cost is a few page fetches, and the failure it
+    # prevents is only discoverable after the email has gone.
+    drop_leadership: bool = True
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 

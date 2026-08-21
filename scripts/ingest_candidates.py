@@ -28,7 +28,7 @@ from .normalize import (
     normalize_person,
     registrable_domain,
 )
-from . import exclusions, seniority
+from . import exclusions, leadership, seniority
 from .suppression import is_suppressed, lab_is_full, load_set
 
 
@@ -45,6 +45,8 @@ class IngestReport:
     dropped_free_mail: list[str] = field(default_factory=list)
     dropped_excluded: list[str] = field(default_factory=list)
     dropped_lab_full: list[str] = field(default_factory=list)
+    dropped_leadership: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     degraded_companies: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -61,6 +63,7 @@ class IngestReport:
             ("free-mail", self.dropped_free_mail),
             ("personally excluded", self.dropped_excluded),
             ("lab already at cap", self.dropped_lab_full),
+            ("on a founders/leadership page", self.dropped_leadership),
         ):
             if items:
                 lines.append(f"dropped {label}: {len(items)} -- {', '.join(items[:5])}"
@@ -230,6 +233,20 @@ def _ingest_company(
     account_id = upsert_account(conn, cf, source, str(path))
     per_company = 0
 
+    # One scan per company, covering every candidate in the file. A founder or
+    # exec reached by a cold sequence is the failure that is only visible after
+    # it has been sent, and none of the other evidence shows it: a commit and a
+    # roster entry look identical whether the author writes code or runs the
+    # company. Costs a handful of page fetches per company.
+    on_leadership: dict[str, str] = {}
+    if cf.domain and config.icp.drop_leadership:
+        try:
+            on_leadership = leadership.scan(cf.domain, [c.name for c in cf.candidates])
+        except Exception as exc:
+            report.notes.append(
+                f"{cf.company}: leadership page scan failed ({type(exc).__name__}); "
+                f"rows are NOT filtered for seniority")
+
     # Best-first, so when the per-company cap binds it drops the people least
     # likely to reply rather than whoever happened to be last in the file. The
     # ordering is the inverse of an org chart on purpose -- see scripts/seniority.
@@ -245,6 +262,9 @@ def _ingest_company(
         # Checked here rather than at send: someone the operator already knows
         # should never reach the review queue, because the reviewer's job is
         # judging the pitch, not remembering every colleague.
+        if where := on_leadership.get(c.name):
+            report.dropped_leadership.append(f"{c.name} ({where[:110]})")
+            continue
         if ex := exclusions.check(conn, config, c.name, lab=lab, company=c.company):
             report.dropped_excluded.append(f"{c.name} <{email}> ({ex['reason']})")
             continue

@@ -244,3 +244,41 @@ def test_a_corroborated_page_is_a_real_hit(monkeypatch):
     hit = person_pages.find("Jisen Li", company="Together AI")
     assert hit.status == "found" and hit.corroborated
     assert "jisenli@together.ai" in hit.emails
+
+
+# ------------------------------------------------------ leadership at ingest
+
+
+def test_a_founder_is_dropped_at_ingest(conn, config, candidates_dir, monkeypatch):
+    """The filter was written and then never called -- it only ever ran from an
+    ad-hoc script, so a founder would have reached the queue in a real run. It
+    now runs once per company file, covering every candidate in it."""
+    from scripts import ingest_candidates, leadership
+    from scripts.ingest_candidates import ingest
+
+    seen = {}
+
+    def fake_scan(domain, names, timeout=15):
+        seen["names"] = list(names)
+        return {names[0]: f"https://{domain}/about -- Alan Turing Co-Founder"}
+
+    monkeypatch.setattr(ingest_candidates.leadership, "scan", fake_scan)
+    report = ingest(conn, config, candidates_dir)
+    assert seen.get("names"), "the scan was never called"
+    assert report.dropped_leadership, "a listed founder was not dropped"
+    assert "Co-Founder" in report.dropped_leadership[0]
+
+
+def test_a_failed_scan_does_not_silently_pass_everyone(conn, config, candidates_dir,
+                                                       monkeypatch):
+    """If the pages cannot be fetched, rows are unfiltered -- which must be said
+    out loud rather than looking like a clean run."""
+    from scripts import ingest_candidates
+    from scripts.ingest_candidates import ingest
+
+    def boom(domain, names, timeout=15):
+        raise ConnectionError("network down")
+
+    monkeypatch.setattr(ingest_candidates.leadership, "scan", boom)
+    report = ingest(conn, config, candidates_dir)
+    assert any("NOT filtered for seniority" in n for n in report.notes)
