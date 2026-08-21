@@ -6,6 +6,38 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task
 
 # /outbound $ARGUMENTS
 
+## If the argument is `help`, or there is no argument
+
+Print exactly this and stop. Do not run anything.
+
+```
+/outbound — find people at a company and leave drafts in your Gmail
+
+  /outbound <company>              investigate one company
+  /outbound <person>               start from someone you already know
+  /outbound --industry "<topic>"   find companies first, then investigate
+
+Options
+  --domain <d>     the company's domain, if the name is ambiguous
+  --seed "<name>"  a person to expand outward from
+  --expand N       also expand the top N entry points (default: off)
+  --budget N       max investigation steps (default 60)
+
+What happens
+  It searches, follows leads, resolves addresses, filters, and writes a
+  draft per person into your Gmail. Nothing is sent. You open Gmail, read
+  them, and send the ones you want -- the next run notices what went out.
+
+  It stops to ask only about: a company found while searching another, an
+  adjacent field, someone senior, or a claim it cannot ground.
+  Answer y / n / always / never.
+
+Examples
+  /outbound Baseten
+  /outbound "Together AI" --domain together.ai
+  /outbound --industry "AI inference"
+```
+
 Run the whole investigation live, from nothing. No pre-staged data, no
 accumulated pool — assume the database may be empty for this target.
 

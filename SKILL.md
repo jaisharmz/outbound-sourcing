@@ -122,7 +122,7 @@ Each exists because something failed silently once.
 | `outbound review import --file review.csv` | load approvals |
 | `outbound send` | write Gmail drafts. `--send` actually sends |
 | `outbound drafts` | what is waiting |
-| `outbound mark-sent --all` | after sending by hand; starts reply tracking |
+| `outbound mark-sent --all` | force-mark; normally detected automatically |
 | `outbound suppress <email>` | honor an opt-out |
 | `outbound doctor` | what is missing and how to fix it |
 

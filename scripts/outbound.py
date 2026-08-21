@@ -1782,9 +1782,24 @@ def drafts_cmd(
     from .send_queue import print_drafts
 
     conn = open_db(db)
+
+    # Reconcile first so the list reflects what is actually still waiting.
+    try:
+        cfg = _config(None)
+        provider = providers.build(cfg.mailboxes.enabled()[0], cfg.secrets())
+        from .reconcile import reconcile
+
+        with transaction(conn):
+            rec = reconcile(conn, cfg, provider)
+        if rec.marked:
+            typer.secho(f"  noticed {len(rec.marked)} you already sent — marked them",
+                        fg=typer.colors.GREEN)
+    except Exception:
+        pass                       # listing must work offline
+
     if print_drafts(conn):
-        typer.echo("\nNone of these count as contacted. After sending them in Gmail:\n"
-                   "  outbound mark-sent --all")
+        typer.echo("\nNone of these count as contacted yet. Send them in Gmail — the "
+               "next run notices\nautomatically, so there is nothing to tell it.")
 
 
 @app.command("mark-sent")

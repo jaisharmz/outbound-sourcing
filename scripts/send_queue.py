@@ -257,6 +257,27 @@ def main(argv: list[str] | None = None) -> int:
         print("nothing due: no approved, verified, unsent contacts"); return 0
 
     provider = providers.build(mailbox, config.secrets())
+
+    # Notice what has already gone before deciding what to queue. Without this
+    # the operator has to announce each send, and skipping that silently
+    # re-queues people who were already written to.
+    if not args.dry_run:
+        from .reconcile import reconcile
+
+        try:
+            with transaction(conn):
+                rec = reconcile(conn, config, provider)
+            if rec.marked:
+                print(f"noticed {len(rec.marked)} draft(s) you already sent:")
+                for _mid, to in rec.marked[:8]:
+                    print(f"    {to}")
+                print()
+            elif rec.error:
+                print(f"could not check your Sent folder ({rec.error}); "
+                      f"drafts already sent may be re-queued\n")
+        except Exception as exc:
+            print(f"sent-folder check failed ({type(exc).__name__}); continuing\n")
+
     if not args.dry_run:
         auth_ok, detail = provider.verify_auth()
         if not auth_ok:
@@ -287,8 +308,9 @@ def main(argv: list[str] | None = None) -> int:
               f"  - the daily cap is untouched ({already}/{cap} used today)\n"
               f"  - these contacts are not marked active\n"
               f"  - reply tracking and company suppression have not started\n"
-              f"\nReview them in Gmail, send by hand, then run:\n"
-              f"  outbound mark-sent --all")
+              f"\nOpen Gmail, read them, send the ones you want. That is the whole\n"
+              f"remaining step -- the next run checks your Sent folder and marks\n"
+              f"them itself.")
     return 1 if failed else 0
 
 

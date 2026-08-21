@@ -258,3 +258,65 @@ def test_the_gate_passes_when_from_survives(tmp_path):
          f"From: Ada Lovelace <{configured}>\n",))
     conn.commit()
     assert not any("delivered as" in p for p in gate(conn, cfg, "startup", "gmail-smtp"))
+
+
+def test_sent_detection_needs_both_recipient_and_subject():
+    """A false positive marks someone contacted who was not, which suppresses
+    them and kills the follow-up. A false negative just means the next run
+    reconciles it. So the match is deliberately narrow."""
+    import inspect
+
+    from scripts import reconcile
+
+    src = inspect.getsource(reconcile.find_sent)
+    assert '"TO"' in src and '"SUBJECT"' in src, "both criteria must be required"
+    assert "readonly=True" in src, "reconciliation must never mutate the mailbox"
+
+
+def test_reconcile_marks_only_what_it_matched(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from scripts import reconcile
+    from scripts.config import Config
+    from scripts.db import open_db
+
+    conn = open_db(str(tmp_path / "r.db"))
+    conn.execute("INSERT INTO accounts (id, name, name_normalized, source, status,"
+                 " created_at, updated_at)"
+                 " VALUES (1,'Acme','acme','t','active','','')")
+    for i, addr in enumerate(("gone@acme.test", "waiting@acme.test"), start=1):
+        conn.execute("INSERT INTO contacts (id, account_id, name, first_name, last_name,"
+                     " title, email, email_domain, email_basis, confidence,"
+                     " created_at, updated_at) VALUES (?,1,?,?,'X','R',?,'acme.test',"
+                     "'observed',0.9,'','')", (i, f"P{i}", f"P{i}", addr))
+        conn.execute("INSERT INTO messages (id, contact_id, step_id, mailbox_id, state,"
+                     " to_addr, subject, recipient_count)"
+                     " VALUES (?,?,'s','m','drafted',?,'Subject A',1)", (i, i, addr))
+    conn.commit()
+
+    # Only the first is in Sent.
+    monkeypatch.setattr(reconcile, "find_sent",
+                        lambda provider, drafts: ({1}, "Sent", ""))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    result = reconcile.reconcile(conn, cfg, object())
+
+    assert [addr for _i, addr in result.marked] == ["gone@acme.test"]
+    states = dict(conn.execute("SELECT to_addr, state FROM messages"))
+    assert states["gone@acme.test"] == "sent"
+    assert states["waiting@acme.test"] == "drafted"
+
+
+def test_a_failed_sent_check_does_not_mark_anything(tmp_path, monkeypatch):
+    """If the mailbox cannot be read, nothing is assumed either way."""
+    from pathlib import Path
+
+    from scripts import reconcile
+    from scripts.config import Config
+    from scripts.db import open_db
+
+    conn = open_db(str(tmp_path / "r2.db"))
+    monkeypatch.setattr(reconcile, "find_sent",
+                        lambda provider, drafts: (set(), "", "ConnectionError"))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    result = reconcile.reconcile(conn, cfg, object())
+    assert result.marked == [] and result.error == "ConnectionError"

@@ -8,11 +8,8 @@ outbound review export --out review.md                 # read them
 outbound send                                          # write Gmail drafts
 ```
 
-Then open Gmail, read each draft, send the ones you want, and:
-
-```bash
-outbound mark-sent --all
-```
+Then open Gmail, read each draft, and send the ones you want. That is the last
+step — the next run notices what went out and records it.
 
 Nothing sends itself. `outbound send` writes drafts; `--send` is the real thing
 and you almost certainly do not want it yet.
@@ -103,11 +100,12 @@ outbound review import --file review.csv
 
 `outbound send` writes drafts into Gmail. Open them, read them, send by hand.
 
-**Then run `outbound mark-sent --all`.** This is the one manual step, and
-forgetting it breaks things quietly: the contact stays un-contacted, so a later
-run can queue them again, reply tracking never starts, and company suppression
-never applies. Nothing errors — it just silently behaves as if you never wrote
-to them.
+**You do not have to tell it what you sent.** The next run checks your Sent
+folder and marks them itself, matching on recipient *and* exact subject. A
+false positive would suppress someone who was never written to, so the match is
+deliberately narrow — and a miss just gets reconciled on the following run.
+
+`outbound mark-sent --all` still exists if you want to force it.
 
 **Pacing.** A personal Gmail sending sixty cold emails in one sitting looks like
 what it looks like. Fifteen to twenty-five a day is the shape this is built for.
