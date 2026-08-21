@@ -378,3 +378,47 @@ def test_only_cited_urls_are_screened():
             assert "org.get(" in line or "cited" in line.lower(), (
                 f"aggregator screen applied to something that may be declared: {line.strip()}"
             )
+
+
+# ------------------------------------------------------------ sitemap_names
+
+
+SITEMAP = """<?xml version="1.0"?>
+<urlset>
+ <url><loc>https://fund.test/company/alpha-labs/</loc></url>
+ <url><loc>https://fund.test/company/beta-systems/</loc></url>
+ <url><loc>https://fund.test/company/</loc></url>
+ <url><loc>https://fund.test/team/someone/</loc></url>
+</urlset>"""
+
+
+def test_sitemap_names_recovers_names_when_pages_are_empty():
+    """Kleiner and General Catalyst list every company in a sitemap and render
+    the pages client-side, so names are all that survive a fetch."""
+    from scripts.funds import parse_sitemap_names
+    out = parse_sitemap_names(SITEMAP, {"path_contains": "/company/"}, "fund")
+    assert [c.name for c in out] == ["Alpha Labs", "Beta Systems"]
+    assert all(c.domain_url is None for c in out)
+    assert all(c.description is None for c in out)
+
+
+def test_sitemap_names_skips_the_index_page():
+    from scripts.funds import parse_sitemap_names
+    out = parse_sitemap_names(SITEMAP, {"path_contains": "/company/"}, "fund")
+    assert "Company" not in [c.name for c in out]
+
+
+def test_sitemap_names_ignores_other_sections():
+    from scripts.funds import parse_sitemap_names
+    out = parse_sitemap_names(SITEMAP, {"path_contains": "/company/"}, "fund")
+    assert "Someone" not in [c.name for c in out]
+
+
+def test_a_warm_intro_fund_marks_its_companies(campaigns, tmp_path):
+    """A fellowship route means an ask, not a cold sequence."""
+    from scripts.discover_companies import CompanyRecord, upsert, DiscoveryReport
+    from scripts.db import connect, migrate
+    conn = connect(tmp_path / "w.db"); migrate(conn)
+    upsert(conn, [CompanyRecord(name="Warm Co", source="vc", fund="kleiner-perkins",
+                                relationship="fellowship")], DiscoveryReport())
+    assert conn.execute("SELECT relationship FROM accounts").fetchone()[0] == "fellowship"

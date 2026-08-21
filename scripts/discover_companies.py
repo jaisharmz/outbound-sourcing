@@ -138,6 +138,7 @@ class CompanyRecord:
     source: str = "list"
     source_ref: str | None = None
     fund: str | None = None
+    relationship: str | None = None
     stages: str | None = None
     verticals: str | None = None
     year_founded: str | None = None
@@ -564,6 +565,7 @@ def from_fund(config: Config, fund_name: str, *, force: bool = False,
             source="vc",
             source_ref=f"{fund_name}:{spec['url']}",
             fund=fund_name,
+            relationship=spec.get("relationship"),
             stages=c.stages,
             verticals=c.verticals,
             year_founded=c.year_founded,
@@ -616,6 +618,7 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
                 " evidence_url = COALESCE(?, evidence_url),"
                 " excluded_reason = COALESCE(?, excluded_reason),"
                 " source_note = COALESCE(?, source_note), fund = COALESCE(?, fund),"
+                " relationship = COALESCE(?, relationship),"
                 " stages = COALESCE(?, stages), verticals = COALESCE(?, verticals),"
                 " year_founded = COALESCE(?, year_founded),"
                 " status = ?, updated_at = ? WHERE id = ?",
@@ -623,8 +626,8 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
                  r.what, r.entry_note,
                  int(r.ships) if r.ships is not None else None,
                  ",".join(r.subproblems) or None, r.evidence_url, r.excluded_reason,
-                 r.source_note, r.fund, r.stages, r.verticals, r.year_founded,
-                 status, utcnow(), row["id"]),
+                 r.source_note, r.fund, r.relationship, r.stages, r.verticals,
+                 r.year_founded, status, utcnow(), row["id"]),
             )
             if status == "excluded":
                 report.excluded += 1
@@ -635,14 +638,14 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
                 "INSERT INTO accounts (name, name_normalized, domain, source, source_ref,"
                 " status, excluded_reason, tier, campaign, what, entry_note, ships,"
                 " subproblems, evidence_url, domain_confidence, source_note, fund,"
-                " stages, verticals, year_founded, created_at, updated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " relationship, stages, verticals, year_founded, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (r.name, key, r.domain, r.source, r.source_ref, status, r.excluded_reason,
                  r.tier, r.campaign, r.what, r.entry_note,
                  int(r.ships) if r.ships is not None else None,
                  ",".join(r.subproblems) or None, r.evidence_url, r.domain_confidence,
-                 r.source_note, r.fund, r.stages, r.verticals, r.year_founded,
-                 utcnow(), utcnow()),
+                 r.source_note, r.fund, r.relationship, r.stages, r.verticals,
+                 r.year_founded, utcnow(), utcnow()),
             )
             if status == "excluded":
                 report.excluded += 1

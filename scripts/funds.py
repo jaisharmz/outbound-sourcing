@@ -194,7 +194,34 @@ def _enrich_from_detail(company: PortfolioCompany, page: str, spec: dict[str, An
 # ------------------------------------------------------------------ dispatch
 
 
-STRATEGIES = {"embedded_json", "list_plus_detail"}
+# ------------------------------------------------------------ sitemap_names
+
+
+def parse_sitemap_names(page: str, spec: dict[str, Any], fund: str) -> list[PortfolioCompany]:
+    """Recover company names from a sitemap when the pages themselves are empty.
+
+    Kleiner Perkins and General Catalyst both list every company page in a
+    sitemap and then render those pages client-side, so a fetch yields neither a
+    description nor a company URL. The names are still real and still worth
+    having -- they are a list to hand to research, not an enrichment source, and
+    saying so is better than filling the gap from a search of unknown quality.
+    """
+    want = spec.get("path_contains", "/compan")
+    urls = [u for u in re.findall(r"<loc>([^<]+)</loc>", page) if want in u]
+    out = []
+    for u in urls:
+        slug = u.rstrip("/").rsplit("/", 1)[-1]
+        if not slug or slug in ("companies", "company", "portfolio"):
+            continue
+        out.append(PortfolioCompany(
+            name=slug.replace("-", " ").title(),
+            detail_url=u,
+            fund=fund,
+        ))
+    return out
+
+
+STRATEGIES = {"embedded_json", "list_plus_detail", "sitemap_names"}
 
 
 def extract(fund_name: str, spec: dict[str, Any], *, force: bool = False,
@@ -209,12 +236,14 @@ def extract(fund_name: str, spec: dict[str, Any], *, force: bool = False,
         raise FundError(f"fund {fund_name!r} has no url")
     page = fetch(url, cache_key=fund_name, force=force)
 
-    if len(page) < 2000:
+    if strategy != "sitemap_names" and len(page) < 2000:
         raise FundError(
             f"{url} returned only {len(page)} bytes. Check the raw response before "
             f"concluding the fund has no portfolio."
         )
     if strategy == "embedded_json":
         return parse_embedded_json(page, spec, fund_name)
+    if strategy == "sitemap_names":
+        return parse_sitemap_names(page, spec, fund_name)
     base = re.match(r"^https?://[^/]+", url).group(0)
     return parse_list_plus_detail(page, spec, fund_name, base=base, limit=limit)

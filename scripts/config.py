@@ -432,7 +432,7 @@ class FundSpec(BaseModel):
     model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
 
     url: str
-    strategy: Literal["embedded_json", "list_plus_detail"]
+    strategy: Literal["embedded_json", "list_plus_detail", "sitemap_names"]
 
 
 class Funds(Strict):
