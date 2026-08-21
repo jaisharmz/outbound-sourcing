@@ -4,34 +4,30 @@ steps:
     delay_business_days: 0
     jitter_business_days: 0
     attachment_set: first_touch
-    # Linked rather than attached. Independent of the attachment set: a first
-    # touch can attach two small documents and link a third that is too large.
-    links:
-      Example large document: https://example.com/doc.pdf
 
   - id: step2_bump
     template: step2_bump.md
     delay_business_days: 4
     jitter_business_days: 1
-    attachment_set: null
 
   - id: step3_breakup
     template: step3_breakup.md
     delay_business_days: 7
     jitter_business_days: 1
-    attachment_set: null
 
+# Each document may have a local file, a URL, or both. Attaching wins where the
+# file fits under campaign.yaml: max_attachment_bytes; anything that does not
+# fit is linked instead. The split is computed from real sizes, not declared.
 attachment_sets:
   first_touch:
     dir: _first_email
-    files:
-      - example_document_a.pdf
-      - example_document_b.pdf
-  follow_up:
-    dir: _second_email
-    files:
-      - example_preprint_a.pdf
-      - example_preprint_b.pdf
+    documents:
+      - name: Example small document
+        file: example_document_a.pdf
+        url: https://example.com/a.pdf
+      - name: Example large document
+        file: example_document_b.pdf
+        url: https://example.com/b.pdf
 
 reply_templates:
   interested: reply_interested.md

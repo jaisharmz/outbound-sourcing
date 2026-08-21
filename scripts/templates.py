@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 from jinja2 import Environment, StrictUndefined, TemplateError
 
-from .config import Campaign, Config, Persona, Step
+from .config import Campaign, Config, Persona, Step, wire_size
 from .errors import ConfigError
 
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
@@ -150,19 +150,61 @@ def template_hash(config: Config, campaign: str | None = None) -> str:
     return h.hexdigest()[:16]
 
 
-def attachments_for(config: Config, step: Step) -> list[Attachment]:
-    """Resolve a named attachment set to real files under attachments_root."""
+def resolve_documents(config: Config, step: Step) -> tuple[list[Attachment], list[tuple[str, str]]]:
+    """Split a step's documents into attachments and links, by size.
+
+    Attach everything that fits under max_attachment_bytes on the wire; link the
+    rest. Smallest first, so one oversized document does not push out two small
+    ones. A document with a local file always prefers attaching -- which means
+    compressing it later moves it across the line with no config change.
+    """
     if not step.attachment_set:
-        return []
+        return [], list(step.links.items())
     aset = config.sequence.attachment_sets[step.attachment_set]
     root = Path(config.campaign.attachments_root).expanduser()
-    out = []
-    for fname in aset.files:
-        path = root / aset.dir / fname
-        if not path.exists():
-            raise ConfigError(f"attachment set {step.attachment_set!r}: missing file {path}")
-        out.append(Attachment(path=path, name=fname))
-    return out
+    # The stricter of the two ceilings decides the split. Using the looser
+    # test-send ceiling produces a set that attaches everything and then fails
+    # the campaign gate, which is the wrong shape of failure: the rule should
+    # produce a sendable message, not an unsendable one plus an error.
+    cap = min(config.campaign.max_attachment_bytes,
+              config.campaign.campaign_max_attachment_bytes)
+
+    sized = []
+    for doc in aset.documents:
+        path = (root / aset.dir / doc.file) if doc.file else None
+        size = path.stat().st_size if path and path.exists() else None
+        sized.append((doc, path if size is not None else None, size))
+    sized.sort(key=lambda t: (t[2] is None, t[2] or 0))
+
+    attachments: list[Attachment] = []
+    links: list[tuple[str, str]] = []
+    running = 0
+    for doc, path, size in sized:
+        if path is not None and size is not None:
+            if wire_size(running + size) <= cap:
+                running += size
+                attachments.append(Attachment(path=path, name=path.name))
+                continue
+            if not doc.url:
+                which = ("campaign_max_attachment_bytes"
+                         if cap == config.campaign.campaign_max_attachment_bytes
+                         else "max_attachment_bytes")
+                raise ConfigError(
+                    f"document {doc.name!r} does not fit and has no url to fall back to. "
+                    f"It is {wire_size(size)/1_000_000:.2f} MB on the wire; "
+                    f"{wire_size(running)/1_000_000:.2f} MB is already attached against a "
+                    f"{cap/1_000_000:.2f} MB ceiling ({which}). Add a url, or compress it."
+                )
+        if doc.url:
+            links.append((doc.name, doc.url))
+        else:
+            raise ConfigError(f"document {doc.name!r}: file not found and no url given")
+    links.extend(step.links.items())
+    return attachments, links
+
+
+def attachments_for(config: Config, step: Step) -> list[Attachment]:
+    return resolve_documents(config, step)[0]
 
 
 def build_context(
@@ -213,10 +255,9 @@ def render(
     """Render one email. Pure function of config + contact; no I/O beyond files."""
     subject_tpl, body_tpl = parse_template(config.template_path(step, campaign))
 
-    # Attachments and links are independent: a first touch can attach two small
-    # documents and link a third that is too large to send.
-    attachments = attachments_for(config, step)
-    links = list(step.links.items())
+    # Attach what fits, link what does not. The split is computed from real file
+    # sizes rather than declared per document.
+    attachments, links = resolve_documents(config, step)
 
     ctx = build_context(
         persona=config.persona,

@@ -76,9 +76,34 @@ Many corporate gateways reject inbound above 10 MB and some above 5 MB, so an ov
 20 sends a day exactly as it is at 500, which is why `max_attachment_bytes` and the
 campaign gate both stay.
 
-Attachments and links are independent, not an either/or: a first touch attaches what fits
-and links what does not. First touch is a resume plus a technical document at roughly 1 MB
-on the wire, with the 6.2 MB portfolio linked.
+Attachments and links are independent, not an either/or. Each document in a set may carry
+a local `file`, a `url`, or both, and `templates.resolve_documents` decides which is which
+from real sizes at render time: attach everything that fits, link the rest, smallest first
+so one heavy document does not push out two light ones. Where a document has both, the
+attachment wins and the link is the fallback -- which means compressing a file later
+promotes it to an attachment with no config change, and a file that goes missing degrades
+to a link instead of failing the send.
+
+The split is computed against the **stricter** of the two ceilings, not the looser one.
+Using the raised test-send ceiling would produce a set that attaches everything and then
+fails the campaign gate, which is the wrong shape of failure: it surfaces at send time
+rather than at configuration time, and it looks like a bug rather than a decision.
+
+Only two things are still hard failures: a document with neither a readable file nor a
+url, and a document too large to attach that has no url to fall back to. Both mean the
+message would go out incomplete.
+
+### Links must resolve without authentication
+
+A request-access wall is worse than no link at all -- the recipient clicks, is told to ask
+permission, and the email reads as careless. `outbound check-links` fetches every linked
+document and classifies it `ok` / `login_wall` / `permission_wall` / `dead`; the send gate
+refuses to start a campaign whose links have never been checked, whose link set has changed
+since the last check (tracked by a fingerprint over all URLs), or whose links fail.
+
+Google Drive share URLs are a specific trap. The `/file/d/<id>/view?usp=sharing` form wraps
+the file in Drive chrome and asks some recipients to sign in; config validation rejects it
+outright and prints the direct-download form `uc?export=download&id=<id>` in the error.
 
 ## Removed: the circuit breaker
 

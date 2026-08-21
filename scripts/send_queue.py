@@ -48,6 +48,9 @@ def gate(conn, config: Config, campaign: str, mailbox_id: str) -> list[str]:
     """Everything that must be true before a single email leaves."""
     problems = list(config.preflight("campaign", campaign=campaign))
 
+    from .check_links import gate as link_gate
+    problems.extend(link_gate(conn, config, campaign))
+
     h = templates.template_hash(config, campaign)
     row = conn.execute(
         "SELECT template_hash, sent_at FROM test_sends WHERE mailbox_id=? AND ok=1"

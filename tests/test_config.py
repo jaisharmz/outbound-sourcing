@@ -42,13 +42,31 @@ def test_missing_template_is_caught_before_any_send(config_root):
         Config(config_root)
 
 
-def test_missing_attachment_is_caught_before_any_send(config_root):
+def test_missing_attachment_with_no_url_is_caught_before_any_send(config_root):
+    """A vanished file is recoverable if the document also carries a url; if it
+    does not, the send has nothing to carry and must fail at load."""
+    from pathlib import Path
+
+    path = config_root / "sequence.yaml"
+    path.write_text(path.read_text().replace("        url: https://example.com/a.pdf\n", ""))
     cfg = Config(config_root)
     target = next(iter(cfg.sequence.attachment_sets.values()))
-    from pathlib import Path
-    (Path(cfg.campaign.attachments_root) / target.dir / target.files[0]).unlink()
-    with pytest.raises(ConfigError, match="missing file"):
+    (Path(cfg.campaign.attachments_root) / target.dir / target.documents[0].file).unlink()
+    with pytest.raises(ConfigError, match="has no url to fall back to"):
         Config(config_root)
+
+
+def test_missing_attachment_falls_back_to_its_url(config_root):
+    from pathlib import Path
+    from scripts.templates import resolve_documents
+
+    cfg = Config(config_root)
+    target = next(iter(cfg.sequence.attachment_sets.values()))
+    (Path(cfg.campaign.attachments_root) / target.dir / target.documents[0].file).unlink()
+    cfg = Config(config_root)                      # must not raise
+    step = next(s for s in cfg.sequence.steps if s.attachment_set)
+    _attachments, links = resolve_documents(cfg, step)
+    assert any(name == target.documents[0].name for name, _ in links)
 
 
 def test_undefined_attachment_set_is_rejected(config_root):
@@ -87,26 +105,46 @@ def test_mailbox_from_and_reply_to_are_separate(config: Config):
     assert mb.from_.header() == "Your Name <you@example.com>"
 
 
-def test_oversized_attachment_set_hard_fails_with_a_breakdown(config_root):
-    """Base64 inflates by 4/3, and many corporate gateways reject above 5-10 MB.
-    An oversized set hard-bounces for reasons unrelated to address quality,
-    which contaminates bounce rate and can trip the circuit breaker falsely."""
+def test_oversized_document_becomes_a_link_not_an_error(config_root):
+    """Base64 inflates by 4/3 and many gateways reject above 5 MB, so a heavy
+    document must not ride along -- but it must not stop the send either. It
+    moves to the link list, which is the whole point of carrying both."""
     from pathlib import Path
-    import yaml
+    from scripts.templates import resolve_documents
 
     cfg = Config(config_root)
     root = Path(cfg.campaign.attachments_root)
-    big = root / "_first_email" / "example_document_a.pdf"
-    big.write_bytes(b"x" * 8_000_000)
+    (root / "_first_email" / "example_document_a.pdf").write_bytes(b"x" * 8_000_000)
 
+    cfg = Config(config_root)                      # must not raise
+    step = next(s for s in cfg.sequence.steps if s.attachment_set)
+    attachments, links = resolve_documents(cfg, step)
+    assert "example_document_a.pdf" not in [a.name for a in attachments]
+    assert any("Example small document" == name for name, _ in links)
+    assert cfg.preflight("campaign") == []
+
+
+def test_oversized_document_with_no_url_is_a_hard_failure(config_root):
+    """Linking is the escape hatch. Without one there is nothing to fall back
+    to, and silently dropping the document would send a half-made pitch."""
+    from pathlib import Path
+    from scripts.templates import resolve_documents
+
+    path = config_root / "sequence.yaml"
+    path.write_text(path.read_text().replace("        url: https://example.com/a.pdf\n", ""))
+    cfg = Config(config_root)
+    (Path(cfg.campaign.attachments_root) / "_first_email" / "example_document_a.pdf"
+     ).write_bytes(b"x" * 8_000_000)
+
+    cfg = Config(config_root)
+    step = next(s for s in cfg.sequence.steps if s.attachment_set)
     with pytest.raises(ConfigError) as exc:
-        Config(config_root)
+        resolve_documents(cfg, step)
     msg = str(exc.value)
+    assert "no url to fall back to" in msg
     assert "on the wire" in msg
-    assert "max_attachment_bytes" in msg
-    assert "example_document_a.pdf" in msg
-    assert "%" in msg                      # per-file share
-    assert "dropping example_document_a.pdf leaves" in msg
+    assert "max_attachment_bytes" in msg           # names the binding ceiling
+    assert any("no url to fall back to" in b for b in cfg.preflight("campaign"))
 
 
 def test_attachment_limit_is_configurable(config_root):
@@ -190,14 +228,24 @@ def test_raised_load_cap_lets_a_heavy_set_load(config_root):
 
 
 def test_raised_load_cap_does_not_leak_into_campaigns(config_root):
-    """The whole point of the split: raising one ceiling must not raise the other."""
+    """The whole point of the split: raising the test-send ceiling must not
+    raise what strangers receive. The split is computed against the stricter of
+    the two, so the leak is impossible rather than merely detected."""
+    from scripts.templates import resolve_documents
+    from scripts.config import wire_size
+
     _oversize(config_root)
     path = config_root / "campaign.yaml"
     path.write_text(path.read_text() + "\nmax_attachment_bytes: 20000000\n")
-    blockers = Config(config_root).preflight("campaign")
-    assert any("campaign_max_attachment_bytes" in b for b in blockers)
-    assert any("must not ship a set this size to strangers" in b for b in blockers)
 
+    cfg = Config(config_root)
+    assert cfg.campaign.max_attachment_bytes == 20_000_000
+    step = next(s for s in cfg.sequence.steps if s.attachment_set)
+    attachments, links = resolve_documents(cfg, step)
+    total = wire_size(sum(a.size for a in attachments))
+    assert total <= cfg.campaign.campaign_max_attachment_bytes
+    assert "example_document_a.pdf" not in [a.name for a in attachments]
+    assert cfg.preflight("campaign") == []
 
 def test_campaign_gate_is_independently_configurable(config_root):
     _oversize(config_root)

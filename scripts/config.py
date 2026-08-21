@@ -328,9 +328,42 @@ class Mailboxes(Strict):
 # ---------------------------------------------------------------- sequence
 
 
+DRIVE_VIEW_RE = re.compile(r"drive\.google\.com/file/d/([\w-]+)")
+
+
+class Document(Strict):
+    """One document, which may exist locally, remotely, or both.
+
+    The rule, encoded rather than decided per document: attach anything that
+    keeps the message under max_attachment_bytes, link anything that does not.
+    Where both a local file and a URL exist, attaching wins and the link is the
+    fallback -- so compressing a file later turns it into an attachment with no
+    config change.
+    """
+
+    name: str
+    file: str | None = None
+    url: str | None = None
+
+    @model_validator(mode="after")
+    def _has_a_source(self) -> "Document":
+        if not self.file and not self.url:
+            raise ValueError(f"document {self.name!r} has neither a file nor a url")
+        if self.url and DRIVE_VIEW_RE.search(self.url):
+            fid = DRIVE_VIEW_RE.search(self.url).group(1)
+            raise ValueError(
+                f"document {self.name!r} links to the Drive viewer, which wraps the file in "
+                f"Drive chrome and asks some recipients to sign in. Use the direct-download "
+                f"form: https://drive.google.com/uc?export=download&id={fid}"
+            )
+        if self.url and not self.url.startswith("http"):
+            raise ValueError(f"document {self.name!r}: url must be absolute")
+        return self
+
+
 class AttachmentSet(Strict):
-    dir: str
-    files: list[str]
+    dir: str = ""
+    documents: list[Document] = Field(default_factory=list)
 
 
 class Step(Strict):
@@ -661,38 +694,17 @@ class Config:
                         f"{self.templates_dir_for(name) / step.template} or {self.templates_dir}"
                     )
 
+        # Oversize is not a load-time error: a document that does not fit becomes
+        # a link (see templates.resolve_documents). The only failure here is a
+        # document with neither a readable file nor a url -- nothing to send.
         root = Path(self.campaign.attachments_root).expanduser()
-        limit = self.campaign.max_attachment_bytes
         for name, aset in self.sequence.attachment_sets.items():
-            sizes: list[tuple[str, int]] = []
-            for fname in aset.files:
-                fpath = root / aset.dir / fname
-                if not fpath.exists():
-                    problems.append(f"attachment set {name!r} -> missing file {fpath}")
-                else:
-                    sizes.append((fname, fpath.stat().st_size))
-
-            if not sizes:
-                continue
-            total_wire = wire_size(sum(n for _, n in sizes))
-            if total_wire > limit:
-                lines = [
-                    f"attachment set {name!r} is {human(total_wire)} on the wire, over the "
-                    f"{human(limit)} max_attachment_bytes limit. Many corporate gateways "
-                    f"reject inbound above 10 MB and some above 5 MB, so this set would "
-                    f"hard-bounce for reasons unrelated to address quality."
-                ]
-                for fname, nbytes in sorted(sizes, key=lambda x: -x[1]):
-                    share = 100 * nbytes / sum(n for _, n in sizes)
-                    lines.append(
-                        f"      {human(wire_size(nbytes)):>9} wire  {share:5.1f}%  {fname}"
+            for doc in aset.documents:
+                if doc.file and not (root / aset.dir / doc.file).exists() and not doc.url:
+                    problems.append(
+                        f"attachment set {name!r}: {doc.file} is missing and "
+                        f"{doc.name!r} has no url to fall back to"
                     )
-                biggest = max(sizes, key=lambda x: x[1])
-                remainder = wire_size(sum(n for f, n in sizes if f != biggest[0]))
-                lines.append(
-                    f"      dropping {biggest[0]} leaves {human(remainder)}"
-                )
-                problems.append("\n    ".join(lines))
 
         if not self.mailboxes.enabled():
             problems.append("mailboxes.yaml: no mailbox has enabled: true")
@@ -763,20 +775,21 @@ class Config:
                 )
 
         if mode == "campaign":
+            # What will actually be attached, after the size split -- not the
+            # whole set, since oversized documents become links.
+            from .templates import resolve_documents
             limit = self.campaign.campaign_max_attachment_bytes
-            root = Path(self.campaign.attachments_root).expanduser()
-            for name, aset in self.sequence.attachment_sets.items():
-                total = wire_size(sum(
-                    (root / aset.dir / f).stat().st_size
-                    for f in aset.files
-                    if (root / aset.dir / f).exists()
-                ))
+            for step in self.steps_for(campaign):
+                try:
+                    attachments, _links = resolve_documents(self, step)
+                except ConfigError as exc:
+                    blockers.append(str(exc))
+                    continue
+                total = wire_size(sum(a.size for a in attachments))
                 if total > limit:
                     blockers.append(
-                        f"attachment set {name!r} is {human(total)} on the wire, over the "
-                        f"{human(limit)} campaign_max_attachment_bytes gate. "
-                        f"max_attachment_bytes may be higher to allow test sends, but a "
-                        f"campaign must not ship a set this size to strangers."
+                        f"step {step.id!r} would attach {human(total)} on the wire, over the "
+                        f"{human(limit)} campaign_max_attachment_bytes gate."
                     )
 
         return blockers

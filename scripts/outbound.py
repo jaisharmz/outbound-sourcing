@@ -808,6 +808,31 @@ def _summarize_auth(headers: str) -> None:
     typer.echo("  (alignment is judged against the From: domain, not Reply-To)")
 
 
+@app.command("check-links")
+def check_links_cmd(
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Verify every linked document resolves without authentication."""
+    from . import check_links as CL
+
+    cfg = _config(config)
+    conn = open_db(db)
+    with transaction(conn):
+        results = CL.check_all(conn, cfg, campaign)
+    bad = 0
+    for name, url, status, detail in results:
+        mark = "ok  " if status == "ok" else "FAIL"
+        if status != "ok":
+            bad += 1
+        typer.secho(f"  {mark} {name[:34]:<36} {detail[:52]}",
+                    fg=None if status == "ok" else typer.colors.RED)
+    typer.echo(f"\n{len(results) - bad}/{len(results)} links publicly reachable")
+    if bad:
+        raise typer.Exit(1)
+
+
 # ------------------------------------------------------------------ verify
 
 
