@@ -137,6 +137,11 @@ class CompanyRecord:
     evidence_url: str | None = None
     source: str = "list"
     source_ref: str | None = None
+    fund: str | None = None
+    stages: str | None = None
+    verticals: str | None = None
+    year_founded: str | None = None
+    founders: list[str] = field(default_factory=list)
     excluded_reason: str | None = None
     # Why a source run set this company aside. Kept as context for triage, not
     # as a rejection.
@@ -156,6 +161,7 @@ class DiscoveryReport:
     needs_triage: list[str] = field(default_factory=list)
     auto_dropped: list[str] = field(default_factory=list)
     split_names: list[str] = field(default_factory=list)
+    founders_found: int = 0
     degraded_run: str | None = None
     warnings: list[str] = field(default_factory=list)
 
@@ -173,6 +179,11 @@ class DiscoveryReport:
                 f"no domain candidate: {len(self.no_domain)} -- these need resolution "
                 f"before people discovery: {', '.join(self.no_domain[:5])}"
                 + (" ..." if len(self.no_domain) > 5 else "")
+            )
+        if self.founders_found:
+            lines.append(
+                f"founders named by the fund: {self.founders_found} -- recorded in "
+                f"known_people, so discovery resolves an email instead of finding a person"
             )
         if self.split_names:
             lines.append(f"grouped names split into rows: {len(self.split_names)}")
@@ -325,6 +336,16 @@ def read_run_json(run_dir: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def declared_domain(url: str | None) -> str | None:
+    """The registrable domain of a URL a source declares to be the company's own."""
+    if not url or not isinstance(url, str):
+        return None
+    match = re.match(r"^https?://([^/\s:]+)", url.strip())
+    if not match:
+        return None
+    return registrable_domain(match.group(1).lower().removeprefix("www."))
 
 
 def domain_candidate(url: str | None) -> tuple[str | None, str]:
@@ -485,6 +506,56 @@ def from_name_list(path: Path, source: str, config: Config,
     return records, report
 
 
+
+# ------------------------------------------------------------------ vc funds
+
+
+def from_fund(config: Config, fund_name: str, *, force: bool = False,
+              limit: int | None = None) -> tuple[list[CompanyRecord], DiscoveryReport]:
+    """Read one fund's portfolio. Strategy comes from config/funds.yaml."""
+    from . import funds as funds_mod
+
+    if fund_name not in config.funds.funds:
+        raise ConfigError(
+            f"no fund named {fund_name!r} in funds.yaml. "
+            f"Known: {sorted(config.funds.funds) or '(none)'}"
+        )
+    spec = config.funds.funds[fund_name].model_dump()
+    report = DiscoveryReport(source="vc", source_ref=fund_name)
+    try:
+        companies = funds_mod.extract(fund_name, spec, force=force, limit=limit)
+    except funds_mod.FundError as exc:
+        raise ConfigError(str(exc)) from exc
+
+    records = []
+    for c in companies:
+        # A fund lists a company's own website, so the URL is declared rather
+        # than cited as evidence. The aggregator screen must not run here: it
+        # exists for landscape files where the url may be an arXiv abstract, and
+        # applying it would throw away Medium and Substack for being on the
+        # blogging-platform list.
+        domain = declared_domain(c.domain_url)
+        confidence = "declared" if domain else "unknown"
+        if not domain:
+            report.no_domain.append(c.name)
+        records.append(CompanyRecord(
+            name=c.name,
+            domain=domain,
+            domain_confidence=confidence,
+            what=(c.description or None),
+            evidence_url=c.domain_url or c.detail_url,
+            source="vc",
+            source_ref=f"{fund_name}:{spec['url']}",
+            fund=fund_name,
+            stages=c.stages,
+            verticals=c.verticals,
+            year_founded=c.year_founded,
+            founders=c.founders,
+        ))
+    report.founders_found = sum(len(c.founders) for c in companies)
+    return records, report
+
+
 # ------------------------------------------------------------------ persist
 
 
@@ -527,13 +598,16 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
                 " ships = COALESCE(?, ships), subproblems = COALESCE(?, subproblems),"
                 " evidence_url = COALESCE(?, evidence_url),"
                 " excluded_reason = COALESCE(?, excluded_reason),"
-                " source_note = COALESCE(?, source_note),"
+                " source_note = COALESCE(?, source_note), fund = COALESCE(?, fund),"
+                " stages = COALESCE(?, stages), verticals = COALESCE(?, verticals),"
+                " year_founded = COALESCE(?, year_founded),"
                 " status = ?, updated_at = ? WHERE id = ?",
                 (r.tier, r.campaign, r.domain, r.domain, r.domain_confidence,
                  r.what, r.entry_note,
                  int(r.ships) if r.ships is not None else None,
                  ",".join(r.subproblems) or None, r.evidence_url, r.excluded_reason,
-                 r.source_note, status, utcnow(), row["id"]),
+                 r.source_note, r.fund, r.stages, r.verticals, r.year_founded,
+                 status, utcnow(), row["id"]),
             )
             if status == "excluded":
                 report.excluded += 1
@@ -543,18 +617,32 @@ def upsert(conn: sqlite3.Connection, records: list[CompanyRecord],
             conn.execute(
                 "INSERT INTO accounts (name, name_normalized, domain, source, source_ref,"
                 " status, excluded_reason, tier, campaign, what, entry_note, ships,"
-                " subproblems, evidence_url, domain_confidence, source_note,"
-                " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " subproblems, evidence_url, domain_confidence, source_note, fund,"
+                " stages, verticals, year_founded, created_at, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (r.name, key, r.domain, r.source, r.source_ref, status, r.excluded_reason,
                  r.tier, r.campaign, r.what, r.entry_note,
                  int(r.ships) if r.ships is not None else None,
                  ",".join(r.subproblems) or None, r.evidence_url, r.domain_confidence,
-                 r.source_note, utcnow(), utcnow()),
+                 r.source_note, r.fund, r.stages, r.verticals, r.year_founded,
+                 utcnow(), utcnow()),
             )
             if status == "excluded":
                 report.excluded += 1
             else:
                 report.added += 1
+
+        if r.founders:
+            account_id = conn.execute(
+                "SELECT id FROM accounts WHERE name_normalized = ?", (key,)
+            ).fetchone()["id"]
+            for person in r.founders:
+                conn.execute(
+                    "INSERT OR IGNORE INTO known_people (account_id, name, role,"
+                    " provenance, source_url, created_at) VALUES (?,?,?,?,?,?)",
+                    (account_id, person, "founder", "fund_portfolio",
+                     r.evidence_url, utcnow()),
+                )
 
     log_event(conn, "info", "discover.import", source=report.source,
               ref=report.source_ref, added=report.added, updated=report.updated)
@@ -567,7 +655,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Discover companies into the accounts table.")
     ap.add_argument("--mode", choices=["list", "vc", "industry"], required=True)
     ap.add_argument("--run", help="industry-research run directory (mode=industry)")
+    ap.add_argument("--fund", help="fund name from funds.yaml (mode=vc)")
     ap.add_argument("--file", help="company list file (mode=list|vc)")
+    ap.add_argument("--force-refetch", action="store_true")
+    ap.add_argument("--limit", type=int)
     ap.add_argument("--tier", help="tier to assign (mode=list|vc)")
     ap.add_argument("--config")
     ap.add_argument("--db")
@@ -588,9 +679,12 @@ def main(argv: list[str] | None = None) -> int:
                 print("--run is required for mode=industry", file=sys.stderr)
                 return 2
             records, report = from_industry_run(config, Path(args.run), tiers)
+        elif args.mode == "vc" and args.fund:
+            records, report = from_fund(config, args.fund, force=args.force_refetch,
+                                        limit=args.limit)
         else:
             if not args.file:
-                print("--file is required for this mode", file=sys.stderr)
+                print("--file or --fund is required for this mode", file=sys.stderr)
                 return 2
             records, report = from_name_list(Path(args.file), args.mode, config, args.tier)
     except ConfigError as exc:

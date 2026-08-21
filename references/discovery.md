@@ -48,6 +48,18 @@ it belongs in config.
 > cannot ground a detail about someone's work, set `personalization: null`. That is the
 > right answer, not a failure.
 >
+> **When a page returns suspiciously little, check the raw HTML before concluding it
+> has nothing.** WebFetch converts to markdown first, and anything the conversion drops is
+> invisible to you and indistinguishable from absent. A team page that renders to three
+> names when the company clearly has thirty, a roster that looks stale, an empty result
+> that contradicts the site — `curl` the source and grep for `data-` attributes and
+> framework JSON payloads before you write it off. A plausible wrong answer is worse than
+> an error, because nothing downstream catches it.
+>
+> **Check `known_people` before searching for names.** Some accounts already have founders
+> recorded from a fund portfolio at zero search cost. Your budget is better spent resolving
+> their email than rediscovering who they are.
+>
 > **Write** `state/candidates/{slug}.json` against this schema: {schema}. Then stop.
 >
 > **If you find nobody**, write the file with an empty `candidates` list and a `reason`
@@ -67,6 +79,38 @@ An inferred address still needs grounding: the evidence item states the pattern,
 the domain, and links the document the pattern came from. Verification decides whether it
 is real; the evidence chain records why you believed it. Never infer from a pattern you
 saw only once at a large company, and never mix patterns across subdomains.
+
+## Required check: never conclude "no data" from a converted page
+
+**WebFetch renders a page to markdown before you see it. Anything the markdown
+conversion drops is invisible to you, and it looks identical to the page not having the
+data at all.** That failure mode has now produced three wrong answers in this project,
+every one of them plausible rather than an error:
+
+| what happened | what it looked like | what was true |
+|---|---|---|
+| a landscape `url` pointed at an arXiv abstract | a clean domain for the company | the domain was `arxiv.org`, and mail would have gone to a stranger |
+| one malformed YAML record inside a valid block | the run had no company data | 40 of 41 companies were there |
+| a fund's portfolio grid is client-rendered | 21 stale exits, "no current investments" | 855 companies sat in a `data-companies` HTML attribute |
+
+So, whenever a fetch returns suspiciously little — a page you expect to be a roster and it
+has a handful of entries, a list that looks stale, a "no results" that contradicts what the
+site advertises — **do not conclude anything until you have looked at the raw HTML.**
+
+```bash
+curl -sL -A "Mozilla/5.0" "<url>" -o page.html && wc -c page.html
+grep -oE 'data-[a-z-]+="\[' page.html | sort -u          # embedded JSON in attributes
+grep -c '__NEXT_DATA__\|application/json' page.html      # framework payloads
+grep -oE '"[a-z_]*(name|company|title)"\s*:' page.html | sort -u | head
+```
+
+Check `data-` attributes specifically. A 3.6 MB page that renders to two screens of
+markdown is telling you the content is in the source and not in the conversion.
+
+The general rule this is an instance of: **a source that returns a plausible wrong answer
+is more dangerous than one that errors**, because nothing downstream flags it. When a
+result is thinner than the source should be able to produce, treat that as a signal to look
+harder rather than as a finding.
 
 ## Caching
 

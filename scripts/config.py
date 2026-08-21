@@ -440,6 +440,19 @@ class Campaigns(Strict):
         return self.campaigns[name]
 
 
+class FundSpec(BaseModel):
+    """How to read one fund's portfolio page. Keys vary by strategy."""
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+
+    url: str
+    strategy: Literal["embedded_json", "list_plus_detail"]
+
+
+class Funds(Strict):
+    funds: dict[str, FundSpec] = Field(default_factory=dict)
+
+
 class CCRule(Strict):
     cc: list[str] | None = None
     bcc: list[str] | None = None
@@ -544,6 +557,11 @@ class Config:
         self.mailboxes: Mailboxes = _load(Mailboxes, self.root / "mailboxes.yaml")
         self.sequence: Sequence = _load(Sequence, self.root / "sequence.yaml")
         self.cc: CCConfig = _load(CCConfig, self.root / "cc.yaml")
+        self.funds: Funds = (
+            _load(Funds, self.root / "funds.yaml")
+            if (self.root / "funds.yaml").exists()
+            else Funds()
+        )
         self.campaigns: Campaigns = (
             _load(Campaigns, self.root / "campaigns.yaml")
             if (self.root / "campaigns.yaml").exists()

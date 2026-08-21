@@ -20,6 +20,7 @@ from .errors import ConfigError
 from .discover_companies import main as discover_main
 from .ingest_candidates import ingest
 from .normalize import display_company, registrable_domain
+from . import prefilter as prefilter_mod
 from . import providers, suppression, templates
 
 app = typer.Typer(add_completion=False, help="Outbound sourcing: discovery, review, send.")
@@ -112,6 +113,7 @@ def db_stats(db: Optional[str] = typer.Option(None, "--db")):
 def discover_cmd(
     mode: str = typer.Option(..., "--mode", help="list | vc | industry"),
     run: Optional[str] = typer.Option(None, "--run", help="industry-research run dir"),
+    fund: Optional[str] = typer.Option(None, "--fund", help="fund name from funds.yaml"),
     file: Optional[str] = typer.Option(None, "--file", help="company list file"),
     tier: Optional[str] = typer.Option(None, "--tier"),
     config: Optional[str] = typer.Option(None, "--config"),
@@ -120,7 +122,7 @@ def discover_cmd(
 ):
     """Find companies and load them into the accounts table."""
     argv = ["--mode", mode]
-    for flag, value in (("--run", run), ("--file", file), ("--tier", tier),
+    for flag, value in (("--run", run), ("--fund", fund), ("--file", file), ("--tier", tier),
                         ("--config", config), ("--db", db)):
         if value:
             argv += [flag, value]
@@ -164,6 +166,60 @@ def accounts_cmd(
                    f"{str(r['domain_confidence']):<11} {r['name']}")
     total = conn.execute(f"SELECT COUNT(*) FROM accounts{clause}", tuple(params)).fetchone()[0]
     typer.echo(f"\n  {len(rows)} shown of {total}")
+
+
+# ------------------------------------------------------------------ prefilter
+
+
+@app.command("prefilter")
+def prefilter_cmd(
+    fund: Optional[str] = typer.Option(None, "--fund"),
+    rerun: bool = typer.Option(False, "--rerun", help="re-judge everything, not just new"),
+    export_batch: Optional[str] = typer.Option(None, "--export-batch", help="write JSON"),
+    import_verdicts: Optional[str] = typer.Option(None, "--import-verdicts"),
+    limit: int = typer.Option(200, "--limit"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Stage 0: decide which accounts are worth a full research budget.
+
+    Verdicts are stored with the ruleset and the text judged, and the fund
+    payload is cached, so stage 0 can be re-run with better rules without
+    re-fetching. `fail` is a verdict, not a deletion.
+    """
+    conn = open_db(db)
+
+    if export_batch:
+        batch = prefilter_mod.export_batch(conn, fund=fund, limit=limit)
+        Path(export_batch).write_text(json.dumps(batch, indent=2))
+        typer.echo(f"wrote {len(batch)} companies to {export_batch}")
+        typer.echo("\nClassify them against this brief, then re-import:\n")
+        typer.echo(prefilter_mod.CLASSIFY_BRIEF)
+        return
+
+    if import_verdicts:
+        try:
+            payload = json.loads(Path(import_verdicts).read_text())
+        except json.JSONDecodeError as exc:
+            _err(f"{import_verdicts}: not valid JSON -- {exc}")
+            raise typer.Exit(2)
+        try:
+            with transaction(conn):
+                counts = prefilter_mod.import_verdicts(conn, payload)
+        except ValueError as exc:
+            _err(str(exc))
+            raise typer.Exit(2)
+        typer.echo(prefilter_mod.summary(counts))
+        return
+
+    with transaction(conn):
+        counts = prefilter_mod.apply(conn, fund=fund, only_unjudged=not rerun)
+    typer.echo(prefilter_mod.summary(counts))
+    typer.secho(
+        "\nkeywords_v1 was measured against a hand-checked sample and dropped roughly a "
+        "third of real targets. Use --export-batch for the classifier pass before "
+        "spending research budget on this verdict.",
+        fg=typer.colors.YELLOW,
+    )
 
 
 # ------------------------------------------------------------------ ingest

@@ -189,3 +189,53 @@ imported as `degraded` and re-queue rather than reading as finished.
 | `excluded` | stays `excluded` — clearing an exclusion is a human's call |
 | `done`, `researching` | preserved, never demoted by a second run mentioning the company |
 | anything else | `degraded` if the source run was degraded, else `new` |
+
+
+## VC fund portfolios
+
+`config/funds.yaml` declares one URL per fund and how to read that page. Two funds already
+need two strategies:
+
+| strategy | shape | cost |
+|---|---|---|
+| `embedded_json` | the roster is a JSON array in a `data-` attribute | one request, complete |
+| `list_plus_detail` | index links to per-company pages carrying domain and founders | 1 + N requests |
+
+a16z is `embedded_json`: 855 entries, 667 Active, **100% with a real company URL**, 83%
+with a description, and 198 companies naming 433 founders. Lux is `list_plus_detail`: ~28
+server-rendered links, each detail page giving the domain, a description and named founders.
+
+**A fund's URL is declared, not cited.** Unlike a landscape `url` — which may be an arXiv
+abstract — a portfolio entry links the company's own site, so the aggregator screen must
+*not* run on it. Applying it discards Medium and Substack for being on the blogging-platform
+list.
+
+**`stages` and `verticals` are notes, never filters.** a16z records Cursor's stage as
+`M&A`, which is wrong, and `verticals` is their internal taxonomy (Crypto, Consumer, Games,
+American Dynamism) rather than anything about an engineering org.
+
+Founders go to `known_people` with `provenance: fund_portfolio` rather than to `contacts`,
+because they have no email yet and `contacts` means "has an address". Discovery checks that
+table first, so a third of the a16z roster needs an email resolved rather than a person
+found.
+
+## Stage 0: the pre-filter
+
+Four in five portfolio companies have no research or ML engineering function. Researching
+all 667 at a 15-call budget is 10,000 tool calls to find a few hundred real targets, so a
+cheap pass runs first.
+
+Three properties are load-bearing:
+
+- **Recoverable.** The verdict, the ruleset that produced it and the exact text judged are
+  stored, and the fund payload is cached, so stage 0 re-runs with better rules without
+  re-fetching. A `fail` is a verdict, not a deletion.
+- **`unknown` is not `fail`.** No description means not judged, not rejected.
+- **Measured.** A wrongly-dropped company produces no evidence that it was wrongly dropped,
+  so the false-negative rate cannot surface in review and has to be sampled deliberately.
+
+`keywords_v1` was measured this way and **dropped roughly a third of real targets**, so the
+default ruleset is the LLM pass: `--export-batch` writes the unjudged companies,
+a classifier judges them against `CLASSIFY_BRIEF`, and `--import-verdicts` validates and
+loads the result — the same script/model/script contract used for candidate discovery. A
+`pass` without a stated reason is rejected, since a pass spends a research budget.

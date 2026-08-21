@@ -1,0 +1,39 @@
+# Fund portfolios. Each entry declares one URL and how to read that page.
+#
+# Two funds already need two strategies, so this is per-fund by design:
+#
+#   embedded_json     the roster is a JSON array inside a data- attribute.
+#                     One request, complete list. Invisible to markdown
+#                     conversion -- see the required check in
+#                     references/discovery.md.
+#   list_plus_detail  the index links to per-company pages carrying the real
+#                     domain and founders. 1 + N requests.
+
+funds:
+  a16z:
+    url: https://a16z.com/portfolio/
+    strategy: embedded_json
+    attribute: data-companies
+    name_field: name
+    url_field: company_url
+    description_field: website_description
+    founders_field: founders_list
+    # Notes only, never filters: a16z lists Cursor's stage as M&A, which is
+    # wrong, and `verticals` is their internal taxonomy rather than a segment.
+    stages_field: stages
+    verticals_field: focus_areas
+    status_field: status
+    status_contains: Active
+
+  lux:
+    url: https://www.luxcapital.com/companies
+    strategy: list_plus_detail
+    link_pattern: 'href="(/companies/[^"#?]+)"'
+    skip_hosts:
+      - luxcapital.com
+      - linkedin.com
+      - twitter.com
+      - x.com
+      - facebook.com
+      - instagram.com
+      - youtube.com
