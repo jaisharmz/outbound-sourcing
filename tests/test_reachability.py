@@ -107,3 +107,40 @@ def test_no_public_function_is_dead():
         f"public functions with no caller in scripts/: {dead}. A test is not a "
         f"caller -- wire it in or delete it."
     )
+
+
+# ------------------------------------------------- failures must be loud
+
+
+def test_a_failed_mx_lookup_is_unknown_not_invalid(monkeypatch):
+    """Returning [] for both "this domain accepts no mail" and "the lookup did
+    not complete" made a DNS timeout indistinguishable from a dead domain, and
+    probe marked the address invalid on the strength of it -- discarding a real
+    contact because the network hiccuped."""
+    from scripts import verify
+
+    monkeypatch.setattr(verify, "mx_lookup",
+                        lambda d, timeout=8: ([], "MX lookup for x did not complete (Timeout)"))
+    status, detail = verify.probe("someone@example.test")
+    assert status == verify.UNKNOWN
+    assert "did not complete" in detail
+
+    monkeypatch.setattr(verify, "mx_lookup", lambda d, timeout=8: ([], None))
+    status, detail = verify.probe("someone@example.test")
+    assert status == verify.INVALID
+    assert "no MX record" in detail
+
+
+def test_a_failed_org_lookup_is_not_a_verdict(monkeypatch):
+    """An empty roster from a failed request reads as "nobody works there",
+    which is a different claim from "the request did not complete"."""
+    from scripts import hf_org
+
+    hf_org._LAST_FAILURE.clear()
+    monkeypatch.setattr(hf_org, "members", lambda slug: [])
+    ok, why = hf_org.check("Hugging Face", "Someone")
+    assert ok is None and "private, renamed or empty" in why
+
+    hf_org._LAST_FAILURE["huggingface"] = "HTTP 503"
+    ok, why = hf_org.check("Hugging Face", "Someone")
+    assert ok is None and "lookup failed (HTTP 503)" in why

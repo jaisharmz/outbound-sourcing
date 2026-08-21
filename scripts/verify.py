@@ -42,18 +42,32 @@ def port_25_reachable(timeout: int = 8) -> bool:
     return _PORT_25
 
 
-def mx_hosts(domain: str, timeout: int = 8) -> list[str]:
+def mx_lookup(domain: str, timeout: int = 8) -> tuple[list[str], str | None]:
+    """(hosts, failure). A failure is not an empty list.
+
+    Returning [] for both "this domain accepts no mail" and "the lookup did not
+    complete" made a DNS timeout indistinguishable from a dead domain, and probe
+    marked the address invalid on the strength of it -- discarding a real contact
+    because the network hiccuped. The two answers are now separable and the
+    caller has to choose.
+    """
     try:
         import dns.resolver
     except ImportError:
-        return []
+        return [], ("dnspython is not installed, so MX cannot be checked at all. "
+                    "Install it: pip install dnspython")
     try:
         resolver = dns.resolver.Resolver()
         resolver.lifetime = resolver.timeout = timeout
         answers = resolver.resolve(domain, "MX")
-        return [str(r.exchange).rstrip(".") for r in sorted(answers, key=lambda r: r.preference)]
-    except Exception:
-        return []
+        return [str(r.exchange).rstrip(".")
+                for r in sorted(answers, key=lambda r: r.preference)], None
+    except Exception as exc:
+        name = type(exc).__name__
+        # NXDOMAIN and NoAnswer are real answers: the domain genuinely has no MX.
+        if name in ("NXDOMAIN", "NoAnswer", "NoNameservers"):
+            return [], None
+        return [], f"MX lookup for {domain} did not complete ({name})"
 
 
 def _random_local() -> str:
@@ -70,7 +84,9 @@ def probe(email: str, *, mail_from: str = "", timeout: int = 10) -> tuple[str, s
     domain = email.partition("@")[2]
     if not domain:
         return INVALID, "no domain in address"
-    hosts = mx_hosts(domain)
+    hosts, failure = mx_lookup(domain)
+    if failure:
+        return UNKNOWN, failure
     if not hosts:
         return INVALID, f"no MX record for {domain}"
 

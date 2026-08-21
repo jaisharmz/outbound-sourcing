@@ -51,6 +51,11 @@ API = "https://huggingface.co/api"
 # five Mistral candidates as departed. Positives stay trustworthy at any size:
 # being listed is evidence regardless of how many others are.
 MIN_ROSTER_FOR_NEGATIVES = 50
+
+# Why the last members() call for a slug came back empty, when it was a failure
+# rather than an answer. Read by check() so a network problem cannot be reported
+# as a verdict about a person.
+_LAST_FAILURE: dict[str, str] = {}
 UA = {"User-Agent": f"outbound-sourcing/1.0 ({_contact()})"}
 
 # Company -> HF org slug. The slug is rarely the company name.
@@ -79,9 +84,17 @@ def members(slug: str) -> list[dict]:
         raw = urllib.request.urlopen(
             urllib.request.Request(f"{API}/organizations/{slug}/members", headers=UA),
             timeout=30).read()
-    except urllib.error.HTTPError:
+    except urllib.error.HTTPError as exc:
+        # 404 is an answer: there is no such org. Anything else is a failure, and
+        # returning [] for both would let a network blip read as "nobody works
+        # there" -- which is the claim this function is used to check.
+        meter.bump("hf_failures")
+        if exc.code != 404:
+            _LAST_FAILURE[slug] = f"HTTP {exc.code}"
         return []
-    except Exception:
+    except Exception as exc:
+        meter.bump("hf_failures")
+        _LAST_FAILURE[slug] = type(exc).__name__
         return []
     out = []
     for m in json.loads(raw):
@@ -105,6 +118,10 @@ def check(company: str, name: str) -> tuple[bool | None, str]:
         return None, f"no Hugging Face org known for {company!r}"
     roster = current_at(company)
     if not roster:
+        why = _LAST_FAILURE.get(slug)
+        if why:
+            return None, (f"the {slug!r} org lookup failed ({why}), so nothing is known "
+                          f"about this person's current employer")
         return None, f"org {slug!r} returned no members (private, renamed or empty)"
     hit = roster.get(name_key(name))
     if hit:

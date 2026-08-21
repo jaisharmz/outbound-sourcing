@@ -131,6 +131,7 @@ def first_page_text(arxiv_id: str) -> str:
             urllib.request.Request(f"https://arxiv.org/pdf/{arxiv_id}", headers=UA),
             timeout=60).read()
     except Exception:
+        meter.bump("pdf_failures")
         return ""
     with tempfile.TemporaryDirectory() as d:
         pdf, txt = Path(d) / "p.pdf", Path(d) / "p.txt"
