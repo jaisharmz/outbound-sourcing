@@ -90,7 +90,13 @@ def risk_flags(r: sqlite3.Row) -> list[str]:
     if r["email_basis"] == "inferred_from_pattern":
         n = r["email_pattern_samples"] or 0
         conf = r["email_pattern_confidence"] or 0
-        out.append(f"address INFERRED from {n} sample(s) at {conf:.0%} agreement")
+        # Stated first and in these words because it is the distinction that
+        # decides whether a message arrives: every other flag is about whether
+        # the right person receives it, this one is about whether anyone does.
+        out.append(f"NOT OBSERVED -- this address was never seen anywhere. It is what "
+                   f"the {r['email_pattern'] or 'domain'} convention predicts, measured "
+                   f"from {n} sample(s) at {conf:.0%} agreement. If the convention does "
+                   f"not hold for this person it will bounce")
         if n <= 1:
             out.append("single-sample pattern: one address taught us this convention")
         if conf < 0.7:

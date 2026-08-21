@@ -920,8 +920,12 @@ def investigate_cmd(
     people = inv.people()
     done = [n for n in people if inv.complete(n)]
     guessed = [n for n in people if inv.inferred_only(n)]
-    typer.echo(f"\n  {len(inv.facts)} facts, {len(people)} people touched, "
-               f"{len(done)} with address + affiliation")
+    typer.echo(f"\n  {len(inv.facts)} facts, {len(people)} people touched")
+    typer.secho(f"  {len(done)} OBSERVED  -- an address seen on a page, a paper or "
+                f"a commit", fg=typer.colors.GREEN)
+    typer.secho(f"  {len(guessed)} INFERRED  -- derived from the domain convention; "
+                f"never seen for this person",
+                fg=typer.colors.YELLOW if guessed else None)
     for n in done:
         got = inv.person_facts(n)
         typer.secho(f"    {n[:24]:<26} {got['email'].value:<34} "

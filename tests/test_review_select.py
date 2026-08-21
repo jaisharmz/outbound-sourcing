@@ -93,7 +93,7 @@ def test_risk_flags_name_what_could_be_wrong(conn):
                email_pattern_confidence=1.0, verification_status="valid",
                personalization="x", liveness_status="live", observed_at=None)
     flags = " | ".join(risk_flags(single))
-    assert "INFERRED" in flags and "single-sample" in flags
+    assert "NOT OBSERVED" in flags and "single-sample" in flags
 
     mixed = R(email_basis="inferred_from_pattern", email_pattern_samples=8,
               email_pattern_confidence=0.5, verification_status="valid",
@@ -110,3 +110,27 @@ def test_risk_flags_name_what_could_be_wrong(conn):
               email_pattern_confidence=0.9, verification_status="valid",
               personalization="x", liveness_status="live", observed_at=None)
     assert risk_flags(clean) == []
+
+
+def test_an_inferred_address_says_it_was_never_seen():
+    """The operator read "first.last 100%, n=12" as contacts derived from it and
+    they were not. Now that they are, the distinction between an address seen
+    somewhere and one a convention predicts has to be legible at a glance: every
+    other flag asks whether the right person receives it, this one asks whether
+    anyone does."""
+    from scripts.review import risk_flags
+
+    base = {"email_pattern_samples": 12, "email_pattern_confidence": 1.0,
+            "email_pattern": "first.last", "observed_at": None,
+            "verification_status": "mx_only", "personalization": "x",
+            "personalization_source_url": "https://x.test", "liveness_status": None,
+            "name": "A B", "email": "a.b@c.test", "account_domain": "c.test",
+            "title": "Research Scientist"}
+
+    inferred = " | ".join(risk_flags({**base, "email_basis": "inferred_from_pattern"}))
+    assert "NOT OBSERVED" in inferred
+    assert "never seen anywhere" in inferred
+    assert "bounce" in inferred
+
+    observed = risk_flags({**base, "email_basis": "observed"})
+    assert not any("NOT OBSERVED" in f for f in observed)
