@@ -34,6 +34,62 @@ Measured cost, 2026-08-21, both from an empty database: Together AI took 5.2 min
 (2 searches, 247 fetches, 1 API call) and produced 39 entry points and 7
 addresses. Baseten took 1.5 min and correctly produced nothing.
 
+### Discovery is an investigation loop, not a channel sequence
+
+`outbound investigate <company> --domain <d>` is how people are found. Every
+channel in this skill fails on some population -- personal pages fail on hardware
+engineers, paper first pages fail on companies that do not publish, GitHub
+patterns fail without a public org, rosters fail where no org exists. Running
+them in a fixed order and reporting what each one missed produces an accurate
+list of gaps and very few contacts.
+
+**The loop asks one question at each step: what is the next investigation that
+gets me closer to a grounded contact?** A partial result is a lead, not a dead
+end:
+
+| what you have | what it is a lead to |
+| --- | --- |
+| a personal page with no address | its Scholar link, or the person's papers |
+| a Scholar profile | the papers it lists, and a verified email *domain* |
+| a paper carrying company addresses | the addresses, **and every coauthor**, who are usually colleagues |
+| a name and no address | the domain's convention, learned from GitHub commits |
+| an address and no role | the roster, the company team page, the person's own page |
+
+One entry point becomes a team, and each record is grounded in a dated primary
+document naming both the person and the employer. That is not weaker than a
+roster intersection -- it is stronger, because a paper is evidence about a moment
+while a membership list is evidence about now with no history.
+
+**Stopping rule.** Budget (`--budget`, default 60 steps) or `--max-dry`
+consecutive steps yielding neither a fact nor a lead. Both are needed: budget
+alone lets one rich seed spend everything on a single company, and dryness alone
+never terminates on a coauthor graph that keeps offering new names.
+
+**Every step is logged** to `state/investigations/<run>_<company>.md` -- what was
+tried, what it gave, what it suggested next. The reasoning is the reviewable
+part; a contact whose derivation cannot be read is a contact that cannot be
+checked.
+
+**Titles are chased, never inferred.** A title is a claim about someone's role;
+commit history is evidence about their activity, and turning the second into the
+first is the confident-wrong-answer failure this system keeps having to catch. If
+a title survives the loop unfound it stays `UNKNOWN` and is flagged at review for
+a per-row decision.
+
+Measured on the two companies where the older channels failed worst (2026-08-21).
+OpenAlex reported 1 person at Baseten and 3 at Fireworks AI; the personal-page
+channel found 1 address and 0.
+
+| | steps | people grounded (address + affiliation) |
+| --- | --- | --- |
+| Baseten | 36 | **10** |
+| Fireworks AI | 40 | **13** |
+
+**Paid enrichment** (RocketReach, Apollo) is an unimplemented seam in
+`scripts/enrichment.py`. Adding a key changes the evidence story -- such records
+carry `email_basis: purchased`, which is neither observed nor inferred -- so the
+loop reaches for it only after free channels are exhausted for that person.
+
 ### Status of the older paths
 
 They still work and are still reachable; they are no longer the default route,
@@ -41,7 +97,8 @@ and two are narrower than this document originally described.
 
 | path | status |
 | --- | --- |
-| `/outbound` on one company | **current.** The default. |
+| `outbound investigate` | **current.** How people are found. |
+| `/outbound` on one company | **current.** Wraps the loop with review and send. |
 | `outbound discover --mode vc` (fund rosters) | **superseded as the entry point.** Still the way to load a bulk list, but sourcing no longer starts from a fund portfolio. |
 | `outbound discover --mode industry` | **occasional.** Costs 20–60 min and most of a session's search budget. |
 | per-company research subagents (§2) | **superseded** by `/outbound`, which does the same work in one invocation and reports its cost. |

@@ -816,6 +816,59 @@ def candidates_from_pages(
                 "then ingest.", fg=typer.colors.YELLOW)
 
 
+@app.command("investigate")
+def investigate_cmd(
+    company: str = typer.Argument(...),
+    domain: str = typer.Option(..., "--domain"),
+    seed: Optional[str] = typer.Option(None, "--seed", help="names, comma-separated"),
+    budget: int = typer.Option(60, "--budget", help="max steps"),
+    max_dry: int = typer.Option(8, "--max-dry"),
+    run_id: str = typer.Option("inv", "--run-id"),
+    json_out: Optional[str] = typer.Option(None, "--json"),
+):
+    """Chase evidence adaptively until a contact is grounded or the budget runs out.
+
+    Not a channel sequence. Each step asks what investigation gets closest to a
+    grounded contact and takes it: a page with no address but a Scholar link is
+    a lead, not a dead end; a paper carrying company addresses makes every
+    coauthor a new lead. Stops on budget or on max-dry consecutive steps that
+    yield neither a fact nor a lead.
+    """
+    from . import investigate as I
+    from . import meter
+
+    seeds = [I.Lead("person", n.strip(), n.strip(), "operator seed")
+             for n in (seed or "").split(",") if n.strip()]
+    # Without a seed, start from the domain's own convention: it turns every
+    # name found later into an address, and it names people directly.
+    seeds.append(I.Lead("domain_pattern", domain, "", "no seed given; start from "
+                        "the domain's email convention"))
+    inv = I.run(company, domain, seeds, budget=budget, max_dry=max_dry)
+
+    typer.secho(f"\n=== {company}: {len(inv.steps)} steps ===", fg=typer.colors.CYAN)
+    for st in inv.steps:
+        mark = "+" if st.productive else " "
+        typer.echo(f"  {mark} {st.lead.kind:<15} {st.lead.value[:36]:<38} {st.outcome[:40]}")
+    people = inv.people()
+    done = [n for n in people if inv.complete(n)]
+    typer.echo(f"\n  {len(inv.facts)} facts, {len(people)} people touched, "
+               f"{len(done)} with address + affiliation")
+    for n in done:
+        got = inv.person_facts(n)
+        typer.secho(f"    {n[:24]:<26} {got['email'].value:<34} "
+                    f"title={got['title'].value if 'title' in got else 'UNKNOWN'}",
+                    fg=typer.colors.GREEN)
+    typer.echo(f"  stopped: {inv.stopped_because}")
+    log = inv.write_log(run_id)
+    typer.echo(f"  log: {log}")
+    if json_out:
+        Path(json_out).write_text(json.dumps(
+            {n: {k: {"value": f.value, "url": f.url, "quote": f.quote}
+                 for k, f in inv.person_facts(n).items()} for n in people}, indent=2))
+        typer.echo(f"  wrote {json_out}")
+    meter.flush(label="investigate")
+
+
 @app.command("hf-org")
 def hf_org_cmd(
     company: str = typer.Argument(...),
