@@ -166,3 +166,33 @@ def test_reversed_name_order_is_one_person():
 
     assert key("Thomas Wolf") == key("Wolf Thomas")
     assert key("Edward Beeching") != key("Ed Beeching")   # diminutives remain open
+
+
+def test_hf_org_membership_matches_reversed_names(monkeypatch):
+    """OpenAlex hands back both name orders, and the verification oracle has to
+    agree with itself about who a person is."""
+    from scripts import hf_org
+
+    monkeypatch.setattr(hf_org, "members", lambda slug: [
+        {"name": "Thomas Wolf", "user": "thomwolf", "key": hf_org.name_key("Thomas Wolf")}])
+    ok, why = hf_org.check("Hugging Face", "Wolf Thomas")
+    assert ok is True and "thomwolf" in why
+
+
+def test_an_unknown_org_is_unknown_not_absent(monkeypatch):
+    """A company with no mapped org must not read as 'nobody works there'. The
+    question could not be asked, which is a different answer from no."""
+    from scripts import hf_org
+
+    ok, why = hf_org.check("Some Company With No Org", "A Person")
+    assert ok is None and "no Hugging Face org" in why
+
+
+def test_a_departed_employee_fails_the_check(monkeypatch):
+    """9 of 15 Hugging Face addresses belonged to people who had left."""
+    from scripts import hf_org
+
+    monkeypatch.setattr(hf_org, "members", lambda slug: [
+        {"name": "Still Here", "user": "sh", "key": hf_org.name_key("Still Here")}])
+    ok, why = hf_org.check("Hugging Face", "Douwe Kiela")
+    assert ok is False and "out of date" in why

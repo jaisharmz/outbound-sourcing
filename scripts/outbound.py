@@ -816,6 +816,43 @@ def candidates_from_pages(
                 "then ingest.", fg=typer.colors.YELLOW)
 
 
+@app.command("hf-org")
+def hf_org_cmd(
+    company: str = typer.Argument(...),
+    verify: Optional[str] = typer.Option(None, "--verify", help="check one name"),
+    limit: int = typer.Option(40, "--limit"),
+):
+    """Current employees from a company's Hugging Face organisation.
+
+    The verification oracle the other channels lack. An OpenAlex affiliation
+    records where someone worked when a paper was submitted; cross-checking 15
+    Hugging Face addresses against the live org list found 9 had left. It is
+    also the only channel that works for companies which do not publish --
+    OpenAlex found 1 person at Baseten, whose HF org lists 120.
+    """
+    from . import hf_org
+
+    if verify:
+        ok, why = hf_org.check(company, verify)
+        colour = {True: typer.colors.GREEN, False: typer.colors.RED}.get(ok)
+        typer.secho(f"  {verify}: {ok}\n    {why}", fg=colour)
+        raise typer.Exit(0 if ok else 1)
+
+    slug = hf_org.slug_for(company)
+    if not slug:
+        typer.secho(f"  no Hugging Face org mapped for {company!r}. Add it to "
+                    f"hf_org.ORG_SLUGS.", fg=typer.colors.YELLOW)
+        raise typer.Exit(2)
+    roster = hf_org.members(slug)
+    typer.secho(f"\n  {len(roster)} current member(s) of {slug!r}", fg=typer.colors.CYAN)
+    for m in roster[:limit]:
+        typer.echo(f"    {m['name'][:32]:<34} @{m['user']}")
+    if len(roster) > limit:
+        typer.echo(f"    ... and {len(roster) - limit} more")
+    typer.echo("\n  Org membership is strong evidence of a current association, not a "
+               "contract of employment. Use it to filter, never to assert a title.")
+
+
 @app.command("paper-emails")
 def paper_emails_cmd(
     company: str = typer.Argument(...),
