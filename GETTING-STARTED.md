@@ -37,9 +37,9 @@ cp -r config.example config
 |---|---|
 | `persona.md` | Name, role, org, project bullets, links, **physical mailing address**, opt-out wording. Injected into every template. |
 | `icp.yaml` | Titles that count, exclusions, regions, `max_contacts_per_company`. |
-| `campaign.yaml` | Caps, sending window, jitter, warmup, circuit breaker, verification, `test_recipient`, `attachments_root`, `step1_variant`. |
-| `mailboxes.yaml` | The pool. Per-mailbox `from`, `reply_to`, `daily_cap`, `warmup_start_date`, `enabled`. |
-| `sequence.yaml` | Steps, delays in business days, attachment sets. |
+| `campaign.yaml` | `daily_cap`, sending window, jitter, verification, `test_recipient`, `test_send_allowlist`, `attachments_root`, attachment gates. |
+| `mailboxes.yaml` | One mailbox: `from`, `reply_to`, SMTP/IMAP hosts, `auth_ref`, `enabled`. |
+| `sequence.yaml` | Steps, delays in business days, attachment sets, and `links:` for documents too large to attach. |
 | `cc.yaml` | Who gets copied, and at which precedence level. |
 | `dorks.yaml` | Search seeds for discovery. |
 | `blackout_dates.yaml` | Days to never send. |
