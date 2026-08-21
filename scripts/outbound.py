@@ -884,6 +884,48 @@ def suggest_cmd(
                    f"--domain {sug.domain or '<domain>'}")
 
 
+@app.command("doctor")
+def doctor_cmd(
+    config: Optional[str] = typer.Option(None, "--config"),
+):
+    """What is wrong, and the exact command or click that fixes it.
+
+    Run this when something does not work. Exits non-zero if anything failed, so
+    install.sh and CI can gate on it.
+    """
+    from . import doctor as D
+
+    root = Path(config) if config else ROOT / "config"
+    typer.secho(f"\noutbound doctor -- {root}\n", fg=typer.colors.CYAN)
+    checks = D.run(root)
+    colours = {D.OK: typer.colors.GREEN, D.WARN: typer.colors.YELLOW,
+               D.FAIL: typer.colors.RED}
+    marks = {D.OK: "ok  ", D.WARN: "warn", D.FAIL: "FAIL"}
+    for c in checks:
+        typer.secho(f"  {marks[c.status]}  {c.name:<34} {c.detail[:70]}",
+                    fg=colours[c.status])
+    bad = [c for c in checks if c.status != D.OK]
+    if not bad:
+        typer.secho("\n  everything checks out.", fg=typer.colors.GREEN)
+        return
+    typer.secho(f"\n  {len(bad)} thing(s) to fix:", fg=typer.colors.CYAN)
+    for c in bad:
+        typer.secho(f"\n  {c.name}", fg=colours[c.status], bold=True)
+        typer.echo(f"      {c.detail}")
+        for line in c.fix:
+            typer.echo(f"      $ {line}" if not line.startswith(("or ", "then ",
+                                                                "  ", "a ", "the ",
+                                                                "this ", "public ",
+                                                                "verify ", "check ",
+                                                                "base64 ", "use ",
+                                                                "app ", "create ",
+                                                                "enable ", "paste ",
+                                                                "wait ", "compress ",
+                                                                "set ", "fix "))
+                        else f"        {line}")
+    raise typer.Exit(1)
+
+
 @app.command("investigate")
 def investigate_cmd(
     company: str = typer.Argument(...),
