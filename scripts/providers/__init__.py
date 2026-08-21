@@ -56,6 +56,15 @@ class MailboxProvider(abc.ABC):
     @abc.abstractmethod
     def send(self, email: RenderedEmail) -> SendResult: ...
 
+    def create_draft(self, email: RenderedEmail) -> SendResult:
+        """Write the message as a draft instead of sending it.
+
+        Not abstract: a provider that cannot make drafts should say so at the
+        point of use rather than force every provider to carry a stub.
+        """
+        return SendResult(ok=False, retryable=False,
+                          error=f"provider {type(self).__name__} cannot create drafts")
+
     @abc.abstractmethod
     def list_replies(self, thread_ids: list[str], since: datetime | None = None) -> list[IncomingReply]: ...
 

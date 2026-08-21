@@ -80,7 +80,15 @@ def due(conn, campaign_id: int, limit: int) -> list:
 
 
 def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
-             campaign_id: int, dry_run: bool) -> tuple[bool, str]:
+             campaign_id: int, dry_run: bool, mode: str = "draft") -> tuple[bool, str]:
+    """Draft or send one message.
+
+    `mode` is "draft" by default. A draft is not a send: it does not count
+    against the daily cap, does not mark the contact contacted, and does not
+    start reply tracking, because none of those things have happened until the
+    operator presses send in Gmail. Conflating the two would suppress a company
+    the operator never actually wrote to.
+    """
     if reason := suppression.is_suppressed(conn, row["email"], row["account_name"]):
         return False, f"suppressed: {reason}"
 
@@ -97,28 +105,37 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
         from_header=mailbox.from_.header(), reply_to=mailbox.reply_to, campaign=campaign)
 
     if dry_run:
-        return True, f"would send to {row['email']} (cc {cc.cc or 'none'}, " \
-                     f"{email.recipient_count} recipients)"
+        verb = "would draft" if mode == "draft" else "would send"
+        return True, (f"{verb} to {row['email']} (cc {cc.cc or 'none'}, "
+                      f"{email.recipient_count} recipients, "
+                      f"{len(email.attachments)} attachment(s))")
 
     key = f"{row['id']}:{step.id}:{email.template_hash}"
-    # Commit `sending` BEFORE the provider call. A crash between the two leaves a
-    # sending row to reconcile, never a second email.
+    in_flight = "drafting" if mode == "draft" else "sending"
+    # Commit the in-flight state BEFORE the provider call. A crash between the
+    # two leaves a row to reconcile, never a second email or a second draft.
     with transaction(conn):
         cur = conn.execute(
             "INSERT OR IGNORE INTO messages (contact_id, campaign_id, step_id, mailbox_id,"
             " state, to_addr, cc, bcc, recipient_count, subject, body_hash, template_hash,"
             " attachment_names, idempotency_key, queued_at, sending_at)"
-            " VALUES (?,?,?,?,'sending',?,?,?,?,?,?,?,?,?,?,?)",
+            f" VALUES (?,?,?,?,'{in_flight}',?,?,?,?,?,?,?,?,?,?,?)",
             (row["id"], campaign_id, step.id, mailbox.id, email.to, ",".join(email.cc),
              ",".join(email.bcc), email.recipient_count, email.subject, email.body_hash,
              email.template_hash, ",".join(a.name for a in email.attachments),
              key, utcnow(), utcnow()))
         if cur.rowcount == 0:
-            return False, "already queued or sent (idempotency key exists)"
+            return False, "already queued, drafted or sent (idempotency key exists)"
 
-    result = provider.send(email)
+    result = provider.create_draft(email) if mode == "draft" else provider.send(email)
     with transaction(conn):
-        if result.ok:
+        if result.ok and mode == "draft":
+            # No cap increment, no status change, no reply tracking. Nothing has
+            # been sent, and the contact has not been contacted.
+            conn.execute("UPDATE messages SET state='drafted', drafted_at=?,"
+                         " provider_message_id=? WHERE idempotency_key=?",
+                         (utcnow(), result.message_id, key))
+        elif result.ok:
             conn.execute("UPDATE messages SET state='sent', sent_at=?, provider_message_id=?,"
                          " provider_thread_id=? WHERE idempotency_key=?",
                          (utcnow(), result.message_id, result.thread_id, key))
@@ -132,9 +149,11 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
             # An ambiguous failure is never silently retried.
             conn.execute("UPDATE messages SET state='failed', failed_at=?, error=?"
                          " WHERE idempotency_key=?", (utcnow(), result.error, key))
-        log_event(conn, "info" if result.ok else "error", "send",
+        log_event(conn, "info" if result.ok else "error",
+                  "draft" if mode == "draft" else "send",
                   email=row["email"], ok=result.ok, error=result.error)
-    return result.ok, (result.error or f"sent to {row['email']}")
+    verb = "drafted for" if mode == "draft" else "sent to"
+    return result.ok, (result.error or f"{verb} {row['email']}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -143,10 +162,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--campaign", default="startup")
     ap.add_argument("--mailbox")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--send", action="store_true",
+                    help="actually send. Default is to write Gmail drafts.")
     ap.add_argument("--ignore-window", action="store_true",
                     help="skip the day/time window check; caps and gates still apply")
     ap.add_argument("--config"); ap.add_argument("--db")
     args = ap.parse_args(argv)
+    mode = "send" if args.send else "draft"
 
     try:
         config = load_config(args.config)
@@ -166,15 +188,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {p.splitlines()[0]}", file=sys.stderr)
         return 1
 
-    ok, why = window_open(config)
-    if not ok and not args.ignore_window and not args.dry_run:
-        print(f"outside the sending window: {why}"); return 0
-
+    # The window and the daily cap govern what leaves the mailbox. A draft does
+    # not leave, so neither applies -- and applying them would stop the operator
+    # preparing tomorrow's batch tonight, which is the point of drafting.
     cap = config.campaign.daily_cap
     already = sent_today(conn, mailbox.id)
     room = max(0, cap - already)
-    if room == 0 and not args.dry_run:
-        print(f"daily cap reached: {already}/{cap} recipients today"); return 0
+    if mode == "send":
+        ok, why = window_open(config)
+        if not ok and not args.ignore_window and not args.dry_run:
+            print(f"outside the sending window: {why}"); return 0
+        if room == 0 and not args.dry_run:
+            print(f"daily cap reached: {already}/{cap} recipients today"); return 0
+    else:
+        room = args.limit
 
     campaign_id = get_or_create_campaign(conn, args.campaign)
     rows = due(conn, campaign_id, min(args.limit, room or args.limit))
@@ -187,18 +214,29 @@ def main(argv: list[str] | None = None) -> int:
         if not auth_ok:
             print(f"mailbox not authorised: {detail}", file=sys.stderr); return 2
 
-    print(f"{'DRY RUN: ' if args.dry_run else ''}{len(rows)} to send from {mailbox.id} "
-          f"({already}/{cap} recipients used today)\n")
-    sent = failed = 0
+    verb = "to draft" if mode == "draft" else "to send"
+    print(f"{'DRY RUN: ' if args.dry_run else ''}{len(rows)} {verb} from {mailbox.id}"
+          f"{'' if mode == 'draft' else f' ({already}/{cap} recipients used today)'}\n")
+    done = failed = 0
     delay = config.campaign.inter_send_delay
     for i, row in enumerate(rows):
         ok, detail = send_one(conn, config, provider, mailbox, row, args.campaign,
-                              campaign_id, args.dry_run)
+                              campaign_id, args.dry_run, mode=mode)
         print(f"  {'ok  ' if ok else 'FAIL'} {row['name'][:22]:<22} {detail[:80]}")
-        sent += ok; failed += not ok
-        if not args.dry_run and i < len(rows) - 1:
+        done += ok; failed += not ok
+        # Pacing exists to look human to a receiving server. Nothing is reaching
+        # one in draft mode, so there is nothing to pace.
+        if mode == "send" and not args.dry_run and i < len(rows) - 1:
             time.sleep(random.uniform(delay.min_seconds, delay.max_seconds))
-    print(f"\n{sent} sent, {failed} failed")
+    past = "drafted" if mode == "draft" else "sent"
+    print(f"\n{done} {('would be ' + past) if args.dry_run else past}, {failed} failed")
+    if mode == "draft" and done and not args.dry_run:
+        print(f"\nReview them in Gmail and send by hand. Nothing counts as contacted "
+              f"until then:\n"
+              f"  - the daily cap is untouched ({already}/{cap} used today)\n"
+              f"  - these contacts are still 'new', not 'active'\n"
+              f"  - reply tracking and company suppression have not started\n"
+              f"After sending, run: outbound mark-sent --all")
     return 1 if failed else 0
 
 

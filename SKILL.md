@@ -233,6 +233,26 @@ rendered emails, CC line included**. The user edits the `approved` column and re
 
 ## Sending
 
+**`outbound send` writes Gmail drafts by default. `--send` actually sends.**
+
+A message seen in the real client is a message actually reviewed, and the draft
+is created over IMAP APPEND rather than the Gmail API -- the API needs OAuth and
+this project's client is still behind Google's unverified-app wall, while the app
+password that already sends also drafts.
+
+`drafted` is a distinct state from `sent`, and the distinction is load-bearing: a
+draft does not touch the daily cap, does not move the contact to `active`, and
+does not start reply tracking or company suppression. A batch prepared and then
+abandoned must not suppress companies that were never written to. The window and
+the pacing delay are skipped too -- both govern what a receiving server sees, and
+in draft mode nothing reaches one.
+
+Gmail assigns its own Message-ID when a draft is sent from the web client, so the
+manual send cannot be detected reliably by the id we generated. Marking is
+explicit: `outbound drafts` lists what is waiting, `outbound mark-sent --all`
+records that they went, which is what starts the clock.
+
+
 Nothing about sending involves you. Sends are a foreground command the operator invokes:
 
 ```bash

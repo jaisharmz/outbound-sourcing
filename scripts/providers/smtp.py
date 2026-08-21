@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import time
 import smtplib
 import ssl
 from datetime import datetime, timezone
@@ -128,6 +129,43 @@ class SMTPMailbox(MailboxProvider):
                 att.path.read_bytes(), maintype=maintype, subtype=subtype, filename=att.name
             )
         return msg
+
+    def create_draft(self, email_obj: RenderedEmail) -> SendResult:
+        """APPEND the message to Gmail's Drafts folder over IMAP.
+
+        Gmail's own draft API needs OAuth, and this project's OAuth client is
+        still behind Google's unverified-app wall. IMAP APPEND with the \\Draft
+        flag produces exactly the same thing -- a real draft, openable and
+        sendable from the Gmail client -- using the app password that already
+        works for sending.
+
+        Bcc is written as a header here, unlike on the send path. A draft has no
+        envelope: whatever Gmail is going to send is what the headers say, so
+        dropping Bcc would silently lose recipients the operator asked for.
+        """
+        msg = self.build_mime(email_obj)
+        if email_obj.bcc:
+            msg["Bcc"] = ", ".join(email_obj.bcc)
+        try:
+            conn = self._imap()
+            try:
+                folder = self.mailbox.drafts_folder or "[Gmail]/Drafts"
+                status, detail = conn.append(
+                    f'"{folder}"', "\\Draft", imaplib.Time2Internaldate(time.time()),
+                    msg.as_bytes())
+                if status != "OK":
+                    return SendResult(ok=False, retryable=True,
+                                      error=f"IMAP APPEND to {folder!r} returned "
+                                            f"{status}: {detail}")
+            finally:
+                try:
+                    conn.logout()
+                except Exception:
+                    pass
+        except Exception as exc:
+            return SendResult(ok=False, error=_explain(exc), retryable=True)
+        return SendResult(ok=True, message_id=msg["Message-ID"], thread_id=None,
+                          headers="\n".join(f"{k}: {v}" for k, v in msg.items()))
 
     def send(self, email_obj: RenderedEmail) -> SendResult:
         msg = self.build_mime(email_obj)

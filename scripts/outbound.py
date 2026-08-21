@@ -1293,11 +1293,19 @@ def send_cmd(
     campaign: str = typer.Option("startup", "--campaign"),
     mailbox: Optional[str] = typer.Option(None, "--mailbox"),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    send: bool = typer.Option(False, "--send",
+                              help="actually send. Default writes Gmail drafts."),
     ignore_window: bool = typer.Option(False, "--ignore-window"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
 ):
-    """Send approved, verified contacts. One mailbox, paced, by hand."""
+    """Draft approved, verified contacts into Gmail. Use --send to actually send.
+
+    Drafting is the default because a message you have seen in the real client
+    is a message you have actually reviewed. A draft is not a send: it does not
+    touch the daily cap, does not mark the contact contacted, and does not start
+    reply tracking or company suppression.
+    """
     from .send_queue import main as send_main
 
     argv = ["--limit", str(limit), "--campaign", campaign]
@@ -1306,9 +1314,82 @@ def send_cmd(
             argv += [flag, value]
     if dry_run:
         argv.append("--dry-run")
+    if send:
+        argv.append("--send")
     if ignore_window:
         argv.append("--ignore-window")
     raise typer.Exit(send_main(argv))
+
+
+@app.command("drafts")
+def drafts_cmd(
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """What is sitting in drafts, waiting on a human to press send."""
+    conn = open_db(db)
+    rows = conn.execute(
+        "SELECT m.id, m.to_addr, m.cc, m.subject, m.attachment_names, m.drafted_at,"
+        "       c.name, m.provider_message_id"
+        "  FROM messages m JOIN contacts c ON c.id = m.contact_id"
+        " WHERE m.state = 'drafted' ORDER BY m.drafted_at").fetchall()
+    if not rows:
+        typer.echo("no drafts waiting")
+        return
+    typer.secho(f"\n{len(rows)} draft(s) waiting to be sent by hand:", fg=typer.colors.CYAN)
+    for r in rows:
+        typer.echo(f"  [{r['id']}] {r['name'][:20]:<22} {r['to_addr']:<26} "
+                   f"cc={r['cc'] or '(none)'}")
+        typer.echo(f"       {(r['subject'] or '(no subject)')[:88]}")
+        typer.echo(f"       attachments: {r['attachment_names'] or '(none)'}")
+    typer.echo("\nNone of these count as contacted. After sending them in Gmail: "
+               "outbound mark-sent --all")
+
+
+@app.command("mark-sent")
+def mark_sent(
+    message_ids: Optional[str] = typer.Option(None, "--ids", help="comma-separated"),
+    all_drafts: bool = typer.Option(False, "--all"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Record that drafts were sent by hand, and start the clock on them.
+
+    This is the transition a draft never makes on its own. Detecting it
+    automatically is unreliable: Gmail assigns its own Message-ID when you send
+    a draft from the web client, so the id we generated at APPEND time is not
+    necessarily the id that goes out, and matching on subject and recipient
+    alone would mark the wrong thing on a resend. So this is explicit, and the
+    honest cost is one command after sending.
+    """
+    cfg = _config(config)
+    conn = open_db(db)
+    where = "state = 'drafted'"
+    params: tuple = ()
+    if message_ids:
+        ids = [int(x) for x in message_ids.split(",") if x.strip()]
+        where += f" AND id IN ({','.join('?' * len(ids))})"
+        params = tuple(ids)
+    elif not all_drafts:
+        raise typer.BadParameter("pass --ids or --all")
+
+    rows = conn.execute(f"SELECT * FROM messages WHERE {where}", params).fetchall()
+    if not rows:
+        typer.echo("no matching drafts")
+        return
+    with transaction(conn):
+        for r in rows:
+            conn.execute("UPDATE messages SET state='sent', sent_at=? WHERE id=?",
+                         (utcnow(), r["id"]))
+            conn.execute("UPDATE contacts SET status='active', updated_at=? WHERE id=?",
+                         (utcnow(), r["contact_id"]))
+            conn.execute("INSERT INTO mailbox_day (mailbox_id, day, messages, recipients)"
+                         " VALUES (?,?,1,?) ON CONFLICT(mailbox_id, day) DO UPDATE SET"
+                         " messages=messages+1, recipients=recipients+excluded.recipients",
+                         (r["mailbox_id"], utcnow()[:10], r["recipient_count"]))
+            typer.echo(f"  sent: {r['to_addr']}")
+    typer.secho(f"\n{len(rows)} marked sent. Reply tracking and suppression now apply.",
+                fg=typer.colors.GREEN)
 
 
 # ------------------------------------------------------------------ demo

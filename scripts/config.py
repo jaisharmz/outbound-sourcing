@@ -282,6 +282,9 @@ class Mailbox(Strict):
     smtp_port: int = 587
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
+    # Where create_draft APPENDs. Gmail localises this folder, so a non-English
+    # account needs it set explicitly or the APPEND fails with "no such mailbox".
+    drafts_folder: str = "[Gmail]/Drafts"
     username: str | None = None
 
     @property
