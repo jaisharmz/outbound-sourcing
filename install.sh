@@ -168,9 +168,23 @@ else
   ok "skill linked into ~/.claude/skills/"
 fi
 
+# Same rule as the skill directory: never repoint a link that already resolves
+# somewhere real. A second checkout silently hijacking /outbound leaves the skill
+# loading from one copy and the command from another, and deleting that checkout
+# breaks the command with no clue why.
 if [ -f "$ROOT/.claude/commands/outbound.md" ]; then
-  link "$ROOT/.claude/commands/outbound.md" "$COMMANDS/outbound.md"
-  ok "/outbound command linked into ~/.claude/commands/"
+  EXISTING=""
+  [ -L "$COMMANDS/outbound.md" ] && EXISTING="$(readlink "$COMMANDS/outbound.md")"
+  if [ -z "$EXISTING" ] && [ ! -e "$COMMANDS/outbound.md" ]; then
+    ln -s "$ROOT/.claude/commands/outbound.md" "$COMMANDS/outbound.md"
+    ok "/outbound command linked into ~/.claude/commands/"
+  elif [ "$EXISTING" = "$ROOT/.claude/commands/outbound.md" ]; then
+    ok "/outbound command already points here"
+  else
+    printf '  \033[33mkept\033[0m  /outbound already points at another checkout\n'
+    info "${EXISTING:-$COMMANDS/outbound.md}"
+    info "left alone. Remove it first if you want this checkout to own /outbound."
+  fi
 fi
 
 # ---------------------------------------------------------------- PATH
@@ -181,11 +195,22 @@ case "$(basename "${SHELL:-}")" in
   *)    PROFILE="$HOME/.profile" ;;
 esac
 LINE="export PATH=\"$BIN:\$PATH\""
+# Match ANY outbound-sourcing venv already on the PATH, not just this checkout's.
+# Matching only this one appended a fresh line per clone, and four of them
+# accumulated in one .zshrc during testing -- two pointing at directories that
+# had since been deleted.
+EXISTING_LINE=""
+[ -f "$PROFILE" ] && EXISTING_LINE="$(grep -n 'outbound-sourcing/\.venv/bin' "$PROFILE" | head -1 || true)"
+
 if command -v outbound >/dev/null 2>&1; then
   ok "outbound is on your PATH"
 elif [ -f "$PROFILE" ] && grep -qF "$BIN" "$PROFILE"; then
   ok "PATH line already in $PROFILE"
   info "this shell has not read it yet -- open a new terminal"
+elif [ -n "$EXISTING_LINE" ]; then
+  printf '  \033[33mkept\033[0m  %s already adds a different outbound checkout\n' "$PROFILE"
+  info "line ${EXISTING_LINE%%:*}: it points elsewhere, and a second line would shadow it"
+  info "to use this one, edit that line to:  $LINE"
 else
   printf '%s\n' "$LINE" >> "$PROFILE"
   ok "added the PATH line to $PROFILE"
