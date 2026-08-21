@@ -215,6 +215,12 @@ class Campaign(Strict):
     claims_file: str = ""
     # A claim older than this is reported but no longer reserves anything.
     claims_stale_after_days: int = 28
+    # How many of a company's repos the pattern learner reads commits from.
+    # Measured on Baseten: 4 repos found 7 people, 5 found 10, 8 found 12. Three
+    # real contacts sat in the fifth repo, so a default of 4 quietly lost them.
+    # Each repo is a handful of API calls, so the cost of a higher number is
+    # small and the cost of too low a number is invisible.
+    github_repos: int = 8
     attachments_root: str
     # Wire size, not disk size: base64 inflates by 4/3 and that is what a
     # gateway measures. Many corporate gateways reject inbound above 10 MB and

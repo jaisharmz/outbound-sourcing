@@ -172,3 +172,32 @@ def test_an_inferred_address_is_not_a_complete_contact():
     inv.facts.append(I.Fact("affiliation", "Ada", "Acme", "u", "q"))
     assert not inv.complete("Ada")
     assert inv.inferred_only("Ada")
+
+
+def test_the_repo_count_is_configurable_and_not_four():
+    """Measured on Baseten: 4 repos found 7 people, 5 found 10, 8 found 12.
+    Three real contacts sat in the fifth repo, so a hardcoded 4 lost them
+    silently -- the run looked complete and was short by three."""
+    from pathlib import Path
+
+    from scripts.config import Config
+
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    assert cfg.campaign.github_repos >= 5, "4 is below the cliff measured on Baseten"
+
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "investigate.py").read_text()
+    assert "repos=cfg.campaign.github_repos" in src
+    assert "repos=4" not in src, "the repo count must not be hardcoded"
+
+
+def test_inferred_addresses_do_not_flood_the_frontier():
+    """A large roster yields a hundred inferred addresses. Queueing a person
+    lead for each spent the budget confirming guesses instead of finding real
+    addresses, which cost three observed contacts on the run that did it."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "scripts" / "investigate.py").read_text()
+    block = src[src.index("def step_domain_pattern"):src.index("def step_title_hunt")]
+    inferred_part = block[block.index("email_inferred"):]
+    assert 'Lead("person"' not in inferred_part, \
+        "an inferred address must not queue a person lead"

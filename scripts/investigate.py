@@ -322,7 +322,7 @@ def step_domain_pattern(inv: Investigation, lead: Lead) -> Step:
     org, why = resolve_org(c, inv.company, inv.domain)
     if not org:
         return Step(lead, "no public GitHub org", note=why)
-    res = harvest_domain(c, inv.company, inv.domain, repos=4)
+    res = harvest_domain(c, inv.company, inv.domain, repos=cfg.campaign.github_repos)
     if not res.addresses:
         return Step(lead, f"org {org} had no usable addresses", note=res.status)
     pattern, conf, samples = infer_pattern(res.addresses)
@@ -368,9 +368,12 @@ def step_domain_pattern(inv: Investigation, lead: Lead) -> Step:
                 f"{conf:.0%} across {len(samples)} observed addresses in the {org} "
                 f"GitHub organisation; {member['name']} is a current member of the "
                 f"company's Hugging Face org"))
-            leads.append(Lead("person", member["name"], member["name"],
-                              f"inferred address for {member['name']}; confirm the role",
-                              lead.depth + 1))
+            # Deliberately no lead. A large roster produces a hundred inferred
+            # addresses, and queueing a person lead for each floods the frontier
+            # and spends the budget confirming guesses instead of finding real
+            # addresses -- which cost three observed contacts on the first run
+            # that did it. The fact is recorded; confirming it is a separate
+            # decision the operator makes at review.
 
     note = f"org={org}; {len(res.addresses)} observed"
     if inferred:
