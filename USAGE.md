@@ -123,6 +123,46 @@ arrives.
 
 ---
 
+## Running this as a group
+
+Five people sharing a target list will collide, and two emails from one club to
+one person in a week reads as disorganised.
+
+Point everyone at one shared file:
+
+```yaml
+# config/campaign.yaml
+claims_file: ~/club-outbound/claims.csv     # a git repo, Drive, Dropbox
+claims_stale_after_days: 28
+```
+
+It is an append-only CSV. Pull before a run, push after. Two people claiming
+different companies produce two new lines, which git merges without a conflict.
+
+**You do not have to remember to claim anything.** `outbound mark-sent --all`
+records both the company and each person automatically — sending *is* the claim.
+Use `outbound claim "Baseten"` only when you want to stake one out before you
+have written anything.
+
+```
+outbound claim "Baseten"       # I'm working on this now
+outbound claims                # who has what
+outbound claims --stale        # claimed long ago, never worked
+```
+
+`/outbound` and `outbound company-resolve` warn if someone else holds a company,
+and person-level claims catch the case a company check cannot: two members
+reaching the same researcher through different affiliations.
+
+Claims expire after `claims_stale_after_days`. A stale claim is still shown —
+"Ada looked at this two months ago" is useful — but it stops reserving anything.
+
+**Set `OUTBOUND_USER`** in your shell if `$USER` is not how the group knows you.
+
+**Your persona is yours.** Everyone has their own `config/`: their own resume,
+Drive links and signature. Nothing in `config/` is shared, and the claims file is
+the only thing that is.
+
 ## Troubleshooting
 
 Run `outbound doctor` first. It diagnoses most of this and prints the fix.

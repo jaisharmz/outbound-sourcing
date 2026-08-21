@@ -639,6 +639,18 @@ def company_resolve(
     typer.echo("  suppression: clear")
     typer.echo("  personal exclusions: clear")
 
+    from . import claims as C
+    if cfg.campaign.claims_file:
+        others = C.held_by_others(cfg.campaign.claims_file, C.COMPANY, name)
+        line = C.warn_line(others, C.COMPANY, name,
+                           cfg.campaign.claims_stale_after_days)
+        if line:
+            typer.secho(f"  CLAIMED: {line}", fg=typer.colors.YELLOW)
+            typer.echo("           two emails from one group to one company in a week "
+                       "reads as disorganised.")
+        else:
+            typer.echo("  claims: nobody else is working on this")
+
     # normalize_company is the key ingest matches on. Using anything else here
     # creates a second account row for the same company, and the routing written
     # to the first never reaches the contacts attached to the second -- which is
@@ -815,6 +827,66 @@ def candidates_from_pages(
     typer.echo(f"  wrote {len(out_rows)} candidate(s) to {out}")
     typer.secho("  title and personalization are TODO/null by design -- fill them in, "
                 "then ingest.", fg=typer.colors.YELLOW)
+
+
+def _account_name_for(conn, contact_id: int) -> str:
+    row = conn.execute("SELECT a.name FROM contacts c JOIN accounts a"
+                       " ON a.id = c.account_id WHERE c.id = ?", (contact_id,)).fetchone()
+    return row["name"] if row else ""
+
+
+@app.command("claim")
+def claim_cmd(
+    value: str = typer.Argument(..., help="a company name, or a person's email"),
+    note: str = typer.Option("", "--note"),
+    config: Optional[str] = typer.Option(None, "--config"),
+):
+    """Say you are working on a company, so nobody else in the group starts too.
+
+    Optional. Sending records a claim by itself -- this is for staking one out
+    before you have written anything.
+    """
+    from . import claims as C
+
+    cfg = _config(config)
+    if not cfg.campaign.claims_file:
+        typer.secho("  no claims file configured. Set campaign.claims_file to a path "
+                    "everyone in the group syncs (a git repo, Drive, Dropbox).",
+                    fg=typer.colors.YELLOW)
+        raise typer.Exit(2)
+    kind = C.PERSON if "@" in value else C.COMPANY
+    others = C.held_by_others(cfg.campaign.claims_file, kind, value)
+    if others:
+        typer.secho("  " + C.warn_line(others, kind, value,
+                                       cfg.campaign.claims_stale_after_days),
+                    fg=typer.colors.YELLOW)
+    claim = C.add(cfg.campaign.claims_file, kind, value, note=note)
+    typer.secho(f"  claimed {kind} {claim.value!r} as {claim.who}",
+                fg=typer.colors.GREEN)
+    typer.echo(f"  appended to {cfg.campaign.claims_file} -- commit and push it, "
+               f"or let your shared folder sync")
+
+
+@app.command("claims")
+def claims_cmd(
+    stale: bool = typer.Option(False, "--stale", help="only stale claims"),
+    config: Optional[str] = typer.Option(None, "--config"),
+):
+    """Who is working on what."""
+    from . import claims as C
+
+    cfg = _config(config)
+    rows = C.load(cfg.campaign.claims_file)
+    if not rows:
+        typer.echo("no claims. Either nobody has claimed anything, or "
+                   "campaign.claims_file is not set.")
+        return
+    days = cfg.campaign.claims_stale_after_days
+    rows = [r for r in rows if not stale or r.is_stale(days)]
+    for r in sorted(rows, key=lambda r: r.claimed_at, reverse=True):
+        mark = "stale" if r.is_stale(days) else "    "
+        typer.echo(f"  {mark}  {r.kind:<8} {r.value[:34]:<36} {r.describe(days)}")
+    typer.echo(f"\n  {len(rows)} claim(s). Stale after {days} days.")
 
 
 @app.command("merge-accounts")
@@ -1757,6 +1829,21 @@ def mark_sent(
                          " messages=messages+1, recipients=recipients+excluded.recipients",
                          (r["mailbox_id"], utcnow()[:10], r["recipient_count"]))
             typer.echo(f"  sent: {r['to_addr']}")
+
+    # Sending is the claim. An explicit `outbound claim` exists, but the common
+    # case must not depend on a habit anyone has to remember.
+    from . import claims as C
+    if cfg.campaign.claims_file:
+        seen = set()
+        for r in rows:
+            for kind, value in ((C.PERSON, r["to_addr"]),
+                                (C.COMPANY, _account_name_for(conn, r["contact_id"]))):
+                if value and (kind, value.lower()) not in seen:
+                    seen.add((kind, value.lower()))
+                    C.add(cfg.campaign.claims_file, kind, value, note="sent")
+        typer.echo(f"  recorded {len(seen)} claim(s) in "
+                   f"{cfg.campaign.claims_file} -- push it so the group sees them")
+
     typer.secho(f"\n{len(rows)} marked sent. Reply tracking and suppression now apply.",
                 fg=typer.colors.GREEN)
 

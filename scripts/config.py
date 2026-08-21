@@ -208,6 +208,13 @@ class Campaign(Strict):
     # The run summary lists expansion decisions under all three, so `auto` is
     # unattended rather than invisible.
     autonomy: str = "ask"
+    # A shared append-only CSV of who is working on what, for a group running
+    # this against one target list. Point it at a file in a git repo, a Drive
+    # folder or Dropbox -- anywhere everyone already syncs. Empty disables the
+    # check entirely, which is the right setting for one person.
+    claims_file: str = ""
+    # A claim older than this is reported but no longer reserves anything.
+    claims_stale_after_days: int = 28
     attachments_root: str
     # Wire size, not disk size: base64 inflates by 4/3 and that is what a
     # gateway measures. Many corporate gateways reject inbound above 10 MB and
