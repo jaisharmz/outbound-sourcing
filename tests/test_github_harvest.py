@@ -126,3 +126,42 @@ def test_a_learned_pattern_unlocks_a_new_name():
 
 def test_apply_pattern_refuses_a_single_token_name():
     assert apply_pattern("first.last", "Cher", "x.test") is None
+
+
+# ------------------------------------------- handles are not names
+
+@pytest.mark.parametrize("name,domain", [
+    ("oagrawal-anduril", "anduril.com"),      # org-suffixed login
+    ("piotr-reducto", "reducto.ai"),
+    ("rasa-aadlv", "rasa.com"),               # org-prefixed login
+    ("rasabot", "rasa.com"),                  # bot without a marker
+    ("flock-auditor", "flocksafety.com"),
+    ("jymmi", "foursquare.com"),              # single lowercase token
+    ("danc", "rasa.com"),
+])
+def test_logins_are_not_usable_names(name, domain):
+    from scripts.github_harvest import name_is_usable
+    assert not name_is_usable(name, domain)
+
+
+@pytest.mark.parametrize("name,domain", [
+    ("Tom Bocklisch", "rasa.com"),
+    ("Nicholas Pena", "foursquare.com"),
+    ("Siddhant Nandkishor Pagari", "reducto.ai"),
+    ("Matias Varnum", "skydio.com"),
+])
+def test_real_names_are_usable(name, domain):
+    from scripts.github_harvest import name_is_usable
+    assert name_is_usable(name, domain)
+
+
+def test_a_partial_name_is_not_usable():
+    """'Adam S' and 'A. Rager' cannot be matched to a title with confidence."""
+    from scripts.github_harvest import name_is_usable
+    assert not name_is_usable("Adam S", "foursquare.com")
+    assert not name_is_usable("A. Rager", "skydio.com")
+
+
+def test_bot_named_accounts_are_rejected_as_addresses():
+    assert not is_person_address("auditor@flocksafety.com", "flock-auditor")
+    assert not is_person_address("ci@rasa.com", "rasabot")

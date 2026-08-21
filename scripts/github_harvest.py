@@ -42,8 +42,42 @@ NOREPLY_MARKERS = (
 BOT_MARKERS = (
     "dependabot", "renovate", "github-actions", "greenkeeper", "snyk-bot",
     "semantic-release", "codecov", "allcontributors", "[bot]", "svc-", "-bot@",
-    "admin@", "ci@", "build@", "release@", "automation@",
+    "admin@", "ci@", "build@", "release@", "automation@", "auditor", "-runner",
+    "deploy@", "noreply", "jenkins", "buildkite",
 )
+
+# Service and machine accounts that carry a person-shaped name. Real examples
+# that slipped past the marker list: `flock-auditor`, `rasabot`, `rasa-aadlv`,
+# `piotr-reducto`. The last shape matters most -- an org-suffixed handle is a
+# login, not a name, and it cannot be matched to a title.
+BOT_NAME_RE = re.compile(r"(^|[^a-z])bot([^a-z]|$)|^[a-z0-9_-]+-(bot|ci|admin|auditor)$", re.I)
+
+
+def looks_like_handle(name: str, domain: str) -> bool:
+    """True when the commit `name` is a login rather than a human name."""
+    n = (name or "").strip()
+    if not n:
+        return True
+    org = domain.split(".")[0].lower()
+    low = n.lower()
+    if org and (low.endswith("-" + org) or low.startswith(org + "-")):
+        return True
+    if BOT_NAME_RE.search(low):
+        return True
+    tokens = [t for t in re.split(r"[\s._-]+", n) if t]
+    # A single token with no space is a handle unless it is a plain capitalised name.
+    if len(tokens) < 2:
+        return not (n[:1].isupper() and n.isalpha() and len(n) > 2)
+    return False
+
+
+def name_is_usable(name: str, domain: str) -> bool:
+    """A name we could plausibly match to a title and an ICP role."""
+    if looks_like_handle(name, domain):
+        return False
+    tokens = [t for t in re.split(r"[\s]+", name.strip()) if t]
+    real = [t for t in tokens if t.isalpha() and len(t) > 1]
+    return len(real) >= 2
 
 
 def is_person_address(email: str, name: str = "") -> bool:
@@ -51,6 +85,8 @@ def is_person_address(email: str, name: str = "") -> bool:
     if any(m in e for m in NOREPLY_MARKERS):
         return False
     if any(m in e or m in n for m in BOT_MARKERS):
+        return False
+    if BOT_NAME_RE.search(n):
         return False
     return "@" in e
 
