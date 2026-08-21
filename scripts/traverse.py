@@ -58,6 +58,25 @@ COMPANY_PATTERNS = {
     "groq": r"\bgroq\b",
     "etched": r"\betched\b",
     "cursor": r"\bcursor\b|\banysphere\b",
+    "sambanova": r"sambanova",
+    "cerebras": r"cerebras",
+    "modular": r"\bmodular\s*(?:inc|ai)?\b",
+    "neural magic": r"neural\s*magic",
+    "perplexity ai": r"perplexity\s*ai|perplexity\.ai",
+    "mistral ai": r"mistral\s*ai|mistral\.ai",
+    "hugging face": r"hugging\s*face|huggingface",
+    "d-matrix": r"d-?matrix",
+    "tenstorrent": r"tenstorrent",
+    "furiosaai": r"furiosa",
+    "lightning ai": r"lightning\s*ai|grid\.ai",
+    "predibase": r"predibase",
+    "replicate": r"\breplicate,?\s*inc\b|replicate\.com",
+    "modal labs": r"modal\s*labs|modal\.com",
+    "rain ai": r"\brain\s*ai\b|rain\.ai",
+    "positron ai": r"positron\s*ai",
+    "recogni": r"recogni",
+    "lambda labs": r"lambda\s*labs",
+    "nebius": r"nebius",
 }
 
 # Different companies that share a name. "Cursor Insight Ltd." is a London
@@ -67,6 +86,11 @@ COMPANY_PATTERNS = {
 # Anysphere's Cursor; only knowing they are different companies does.
 EXCLUDE_PATTERNS = {
     "cursor": r"cursor\s+insight",
+    # "Modular" and "Rain" are ordinary words; "Lambda" is a Greek letter used
+    # everywhere in physics. Restrict to the company forms.
+    "modular": r"modular\s+(?:arithmetic|form|design|robot|construction|building)",
+    "rain ai": r"rainfall|precipitation|rain\s+gauge|rain\s+forest",
+    "lambda labs": r"lambda\s+(?:calculus|expression|function|cdm|cold)",
 }
 
 # Founding years. A company cannot have employed anyone before it existed, and
@@ -76,6 +100,12 @@ EXCLUDE_PATTERNS = {
 FOUNDED = {
     "together ai": 2022, "fireworks ai": 2022, "baseten": 2019,
     "groq": 2016, "etched": 2022, "cursor": 2022,
+    "sambanova": 2017, "cerebras": 2016, "modular": 2022, "neural magic": 2018,
+    "perplexity ai": 2022, "mistral ai": 2023, "hugging face": 2016,
+    "d-matrix": 2019, "tenstorrent": 2016, "furiosaai": 2017,
+    "lightning ai": 2019, "predibase": 2021, "replicate": 2019,
+    "modal labs": 2021, "rain ai": 2017, "positron ai": 2023,
+    "recogni": 2017, "lambda labs": 2012, "nebius": 2024,
 }
 
 # Prose tells. A real affiliation string is a short comma-delimited address
@@ -143,7 +173,14 @@ def seed_company(conn: sqlite3.Connection, client: Client, company: str,
     # and the yield number is inflated by a factor of two.
     people: dict[str, dict] = {}
     for aid, rec in people_raw.items():
-        key = re.sub(r"\s+", " ", rec["name"].strip().lower())
+        # Sorted tokens, so "Thomas Wolf" and "Wolf Thomas" are one person.
+        # OpenAlex carries both orders for the same author and the exact-string
+        # merge missed it, putting Hugging Face's CSO in the queue twice.
+        # Over-merging inside one company's affiliation set is the same bet as
+        # merging duplicate author ids: two people at one employer with the same
+        # name in reversed order is vanishingly rare, a duplicate email is not.
+        key = " ".join(sorted(
+            t for t in re.split(r"[^a-z]+", rec["name"].strip().lower()) if t))
         cur = people.get(key)
         if cur is None:
             people[key] = {**rec, "openalex_ids": [aid]}

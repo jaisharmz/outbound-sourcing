@@ -142,3 +142,27 @@ def test_leadership_is_flagged_not_excluded():
            "title": "Co-founder and Chief Scientist"}
     assert any("least likely to reply" in f for f in risk_flags(row))
     assert not risk_flags({**row, "title": "Research Scientist", "name": "B IC"})
+
+
+def test_free_mail_is_dropped_only_when_inferred():
+    """An inferred consumer address is a guess -- there is no pattern to infer
+    from at gmail.com. One the person published on their own homepage as their
+    contact is first-party and current. Conflating the two took Hugging Face
+    from 15 addresses to 1."""
+    from scripts.normalize import is_free_mail
+
+    assert is_free_mail("gmail.com")
+    src = (__import__("pathlib").Path("scripts/ingest_candidates.py")).read_text()
+    assert 'is_free_mail(domain_of(email)) and c.email_basis != "observed"' in src
+
+
+def test_reversed_name_order_is_one_person():
+    """OpenAlex carries both orders for the same author. The exact-string merge
+    missed it and put Hugging Face's CSO in the queue twice."""
+    import re
+
+    def key(n):
+        return " ".join(sorted(t for t in re.split(r"[^a-z]+", n.strip().lower()) if t))
+
+    assert key("Thomas Wolf") == key("Wolf Thomas")
+    assert key("Edward Beeching") != key("Ed Beeching")   # diminutives remain open

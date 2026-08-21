@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
+import urllib.error
 import tempfile
 import urllib.parse
 import urllib.request
@@ -36,6 +38,7 @@ from . import meter
 
 UA = {"User-Agent": "outbound-sourcing/1.0 (mailto:jaisharmaus@gmail.com)"}
 ARXIV = "http://export.arxiv.org/api/query"
+SEARCH_DELAY = 3.0      # arXiv's requested rate
 
 PLAIN = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 BRACE = re.compile(r"[\{\[]([A-Za-z0-9._%+,\s-]+)[\}\]]\s*@\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
@@ -67,12 +70,34 @@ class PaperHit:
 
 
 def search(query: str, max_results: int = 12) -> list[tuple[str, str, list[str]]]:
-    """arXiv search. Returns (id, title, authors)."""
+    """arXiv search. Returns (id, title, authors).
+
+    arXiv asks for roughly three seconds between requests and answers 429 when
+    that is ignored. A sweep across twenty companies is dozens of calls, and
+    without backoff it died on the eighth -- the same failure the OpenAlex
+    client already had fixed, in a module written after it.
+    """
     url = (f"{ARXIV}?search_query={urllib.parse.quote(query)}"
            f"&max_results={max_results}&sortBy=submittedDate&sortOrder=descending")
-    meter.bump("arxiv_calls")
-    xml = urllib.request.urlopen(
-        urllib.request.Request(url, headers=UA), timeout=30).read().decode("utf-8", "replace")
+    xml = ""
+    backoff = 4.0
+    for attempt in range(5):
+        meter.bump("arxiv_calls")
+        try:
+            xml = urllib.request.urlopen(
+                urllib.request.Request(url, headers=UA), timeout=40
+            ).read().decode("utf-8", "replace")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 503) and attempt < 4:
+                meter.bump("arxiv_throttled")
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            return []
+        except Exception:
+            return []
+    time.sleep(SEARCH_DELAY)
     entries = xml.split("<entry>")[1:]
     out = []
     for e in entries:

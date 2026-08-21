@@ -112,17 +112,34 @@ def test_off_icp_titles_are_dropped(conn, config, candidates):
     ).fetchone()[0] == 0
 
 
-def test_free_mail_addresses_are_dropped(conn, config, candidates):
+def _free_mail_candidate(candidates, basis):
     rec = json.loads((candidates / "kepler-systems.json").read_text())
     c = rec["candidates"][0]
     c["email"] = "alan.turing@gmail.com"
+    c["email_basis"] = basis
     c["evidence"][1]["claim"] = "email is alan.turing@gmail.com"
     c["evidence"][1]["quote"] = "Author: Alan Turing <alan.turing@gmail.com>"
     rec["candidates"] = [c]
     (candidates / "kepler-systems.json").write_text(json.dumps(rec))
 
+
+def test_inferred_free_mail_is_dropped(conn, config, candidates):
+    """There is no pattern to infer from at gmail.com, so an inferred consumer
+    address is a guess wearing the shape of a record."""
+    _free_mail_candidate(candidates, "inferred_from_pattern")
     report = ingest(conn, config, candidates)
-    assert "alanturing@gmail.com" in report.dropped_free_mail
+    assert any("alanturing@gmail.com" in d for d in report.dropped_free_mail)
+
+
+def test_observed_free_mail_is_kept(conn, config, candidates):
+    """An address the person published on their own homepage as their contact is
+    first-party and current -- it is the route they chose to be reached by.
+    Dropping these took Hugging Face from 15 addresses to 1."""
+    _free_mail_candidate(candidates, "observed")
+    report = ingest(conn, config, candidates)
+    assert not any("alanturing@gmail.com" in d for d in report.dropped_free_mail)
+    assert conn.execute("SELECT COUNT(*) FROM contacts WHERE email=?",
+                        ("alanturing@gmail.com",)).fetchone()[0] == 1
 
 
 def test_max_contacts_per_company_is_enforced(conn, config, candidates):

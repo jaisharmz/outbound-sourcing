@@ -242,8 +242,14 @@ def _ingest_company(
         if ex := exclusions.check(conn, config, c.name, lab=lab, company=c.company):
             report.dropped_excluded.append(f"{c.name} <{email}> ({ex['reason']})")
             continue
-        if is_free_mail(domain_of(email)):
-            report.dropped_free_mail.append(email)
+        # The free-mail rule exists because an *inferred* consumer address is a
+        # guess -- there is no pattern to infer from at gmail.com. An address
+        # the person published on their own homepage as their contact is the
+        # opposite: first-party, current, and the route they chose to be reached
+        # by. Dropping those took Hugging Face from 15 addresses to 1, discarding
+        # people who had explicitly said "email me here".
+        if is_free_mail(domain_of(email)) and c.email_basis != "observed":
+            report.dropped_free_mail.append(f"{email} (inferred, not observed)")
             continue
 
         person_key = f"{normalize_person(c.name)}@{registrable_domain(domain_of(email))}"
