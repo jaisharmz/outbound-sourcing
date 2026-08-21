@@ -44,10 +44,7 @@ def seed_person(conn: sqlite3.Connection, client: Client, name: str, run_id: str
                                "institution": a.last_known_institution},
                         run_id=run_id)
     G.record_path(conn, nid, run_id, seed_node_id=None, hops=0, via="seed")
-    if a.last_known_institution:
-        oid = G.upsert_node(conn, "organization", a.last_known_institution, run_id=run_id)
-        G.add_edge(conn, nid, oid, "works_at", source_url=a.url, is_current=True,
-                   quote=f"OpenAlex last known institution: {a.last_known_institution}")
+    resolve_affiliation(conn, client, nid, a, run_id)
     return nid, {"author": a}
 
 
@@ -73,9 +70,16 @@ def expand(conn: sqlite3.Connection, client: Client, node_id: int, run_id: str, 
         inst = info["institutions"][0] if info["institutions"] else None
         cid = G.upsert_node(conn, "person", info["name"],
                             external={"openalex": short},
-                            attrs={"institution": inst,
-                                   "papers_with_source": info["count"],
-                                   "latest_year": info["latest"]},
+                            attrs={
+                                # From the shared paper's authorship, which is
+                                # accurate but sparse. Not an assertion about
+                                # where they work now -- that is what
+                                # resolve_affiliation is for, and it writes
+                                # affiliation_confidence alongside its answer.
+                                "paper_institution": inst,
+                                "topics": info["topics"],
+                                "papers_with_source": info["count"],
+                                "latest_year": info["latest"]},
                             run_id=run_id)
         title, year, url = info["papers"][0]
         if G.add_edge(conn, node_id, cid, "coauthored_with", source_url=url,
@@ -84,12 +88,71 @@ def expand(conn: sqlite3.Connection, client: Client, node_id: int, run_id: str, 
             exp.added_edges += 1
         G.record_path(conn, cid, run_id, seed_node_id=seed_node_id, hops=hops,
                       via=via + ">coauthored_with")
-        if inst:
-            oid = G.upsert_node(conn, "organization", inst, run_id=run_id)
-            G.add_edge(conn, cid, oid, "works_at", source_url=f"https://openalex.org/{short}",
-                       is_current=True, quote=f"OpenAlex affiliation on a shared paper: {inst}")
         exp.added_people += 1
     return exp
+
+
+# ------------------------------------------------------ affiliation
+
+
+def resolve_affiliation(conn: sqlite3.Connection, client: Client, node_id: int,
+                        author, run_id: str) -> tuple[str | None, float, str]:
+    """Place a person at an organization, with a confidence and a reason.
+
+    Ranked on sustained recency from OpenAlex `affiliations`, never on
+    `last_known_institutions[0]`. Anything below 0.5 is stored as evidence with
+    its doubt attached rather than asserted as fact.
+    """
+    from .openalex import current_affiliation
+
+    inst, conf, why = current_affiliation(author)
+    if not inst:
+        return None, 0.0, why
+    oid = G.upsert_node(conn, "organization", inst, run_id=run_id)
+    G.add_edge(conn, node_id, oid, "works_at", source_url=author.url, is_current=True,
+               quote=f"OpenAlex affiliations, ranked on sustained recency: {why}")
+    attrs = json.loads(conn.execute("SELECT attrs FROM graph_nodes WHERE id=?",
+                                    (node_id,)).fetchone()["attrs"] or "{}")
+    attrs.update({"institution": inst, "affiliation_confidence": conf,
+                  "affiliation_reason": why,
+                  "conflation_risk": author.works_count > 150})
+    conn.execute("UPDATE graph_nodes SET attrs = ?, updated_at = ? WHERE id = ?",
+                 (json.dumps(attrs), utcnow(), node_id))
+    return inst, conf, why
+
+
+def rank(conn: sqlite3.Connection, run_id: str, *, topic_terms: list[str],
+         limit: int = 20) -> list[dict]:
+    """Rank candidates before spending an affiliation lookup on any of them.
+
+    Honest about its own weakness: without an affiliation, seniority band and
+    company fit are unknown, so topic and recency carry nearly all the weight and
+    path_count is the only structural signal available.
+    """
+    rows = conn.execute("""
+        SELECT n.id, n.display_name, n.attrs, MIN(p.hops) hops
+          FROM graph_paths p JOIN graph_nodes n ON n.id = p.node_id
+         WHERE p.run_id IN (SELECT run_id FROM graph_paths)
+           AND n.kind = 'person'
+         GROUP BY n.id""").fetchall()
+    out = []
+    for r in rows:
+        a = json.loads(r["attrs"] or "{}")
+        if a.get("seed"):
+            continue
+        topics = " ".join(a.get("topics") or []).lower()
+        hit = sum(1 for t in topic_terms if t.lower() in topics)
+        score = G.score_node(
+            conn, r["id"], hops=r["hops"] or 1,
+            topic_match=min(1.0, hit / max(1, len(topic_terms))) if topics else 0.4,
+            latest_year=a.get("latest_year"),
+            email_resolvable=False,
+            seniority=a.get("seniority", "unknown"))
+        out.append({"id": r["id"], "name": r["display_name"], "hops": r["hops"],
+                    "paths": G.path_count(conn, r["id"]), "score": score,
+                    "attrs": a})
+    out.sort(key=lambda x: (-x["paths"], -x["score"].total))
+    return out[:limit]
 
 
 # ------------------------------------------------------------------ map

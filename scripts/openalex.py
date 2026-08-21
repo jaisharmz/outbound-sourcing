@@ -1,25 +1,26 @@
-"""OpenAlex: the source for coauthorship edges. NOT for affiliations.
+"""OpenAlex: coauthorship edges, and affiliations if you read the right field.
 
-Measured against a real traversal before being trusted, and the result split
-sharply:
+Measured against a real traversal, twice, because the first measurement was
+wrong and the correction matters more than the original finding:
 
-  coauthorship edges      reliable. Who wrote what with whom and when comes
-                          from the paper itself and is the graph's backbone.
-  author-level
-  last_known_institution  UNRELIABLE. Six of ten checked were wrong, and wrong
-                          in a way that reads as authoritative: Ben Athiwaratkun
-                          (Together AI) came back "Berkeley College", Michael
-                          Poli "BioQ Pharma", Ce Zhang "Ministry of Natural
-                          Resources". Resolving by OpenAlex ID rather than by
-                          name did not help, so it is bad data rather than a
-                          name collision. Never write a works_at edge from it.
+  coauthorship edges      reliable. Who wrote what with whom and when comes from
+                          the paper itself and is the graph's backbone.
+  last_known_institutions a LIST, and its first element is not the most recent.
+                          Reading [0] returns "Berkeley College" for someone at
+                          Together AI and "BioQ Pharma" for someone at Stanford.
+                          Do not use it.
+  affiliations[]          institution plus the years it was seen. Ranked on
+                          sustained recency this resolves 6-7 of 8 spot checks
+                          correctly, and the failures come back with low
+                          confidence rather than confidently wrong.
   per-paper authorship
-  institution             accurate when present, present 11% of the time, and
-                          absent on exactly the recent preprints that matter.
+  institution             accurate when present, present on 8 of 73 authorships,
+                          absent on the recent preprints that matter.
 
-So the premise that OpenAlex supplies affiliations does not hold. It supplies
-the graph; where someone works has to come from their own page, a company team
-page, or a paper footnote.
+The one real defect left is profile conflation: OpenAlex merges some distinct
+people into a single author record. "Junxiong Wang" carries 198 works and
+resolves to a plausible institution at high confidence while being at least two
+people. Works count wildly out of line with career stage is the tell.
 
 Deterministic. No judgment about who is worth expanding lives here.
 """
@@ -45,6 +46,8 @@ class Author:
     cited_by_count: int = 0
     institutions: list[str] = field(default_factory=list)
     last_known_institution: str | None = None
+    # (institution, years) straight from OpenAlex, unranked.
+    affiliations: list[tuple[str, list[int]]] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     homepage: str | None = None
 
@@ -123,10 +126,17 @@ class Client:
 
     @staticmethod
     def _author(r: dict) -> Author:
-        insts = [i.get("display_name") for i in (r.get("affiliations") or [])
-                 if i.get("display_name")]
+        affs: list[tuple[str, list[int]]] = []
+        for a in r.get("affiliations") or []:
+            name = (a.get("institution") or {}).get("display_name")
+            if name:
+                affs.append((name, sorted(a.get("years") or [], reverse=True)))
+        insts = [n for n, _y in affs]
+        # last_known_institutions is a LIST and its first element is not the
+        # most recent. Reading [0] is what made this field look like bad data.
         last = (r.get("last_known_institutions") or [{}])
         return Author(
+            affiliations=affs,
             openalex_id=r.get("id", ""),
             name=r.get("display_name", ""),
             orcid=r.get("orcid"),
@@ -138,6 +148,8 @@ class Client:
                     if t.get("display_name")],
             homepage=(r.get("ids") or {}).get("orcid"),
         )
+
+    # -------------------------------------------------------- affiliation
 
     # --------------------------------------------------------------- works
 
@@ -177,13 +189,53 @@ def coauthor_counts(works: list[Work], exclude_id: str) -> dict[str, dict]:
             if not short or short == ex or not name:
                 continue
             e = out.setdefault(short, {"name": name, "count": 0, "latest": 0,
-                                       "institutions": set(), "papers": []})
+                                       "institutions": set(), "papers": [],
+                                       "topics": set()})
             e["count"] += 1
             e["latest"] = max(e["latest"], w.year or 0)
             if inst:
                 e["institutions"].add(inst)
+            # Topics come from the shared paper, which is free and already
+            # fetched. Without this a coauthor node has no topical signal at all
+            # and every candidate scores identically.
+            e["topics"].update(w.topics)
             if len(e["papers"]) < 3:
                 e["papers"].append((w.title, w.year, w.url))
     for e in out.values():
         e["institutions"] = sorted(e["institutions"])
+        e["topics"] = sorted(e["topics"])
     return out
+
+
+def current_affiliation(author: Author, *, now: int = 2026,
+                        window: int = 3) -> tuple[str | None, float, str]:
+    """Best guess at where someone works now, with a confidence and a reason.
+
+    Ranked on sustained recency rather than on OpenAlex's own ordering. A single
+    recent year is usually a parsing artefact -- Ben Athiwaratkun shows "Berkeley
+    College" for 2026 alone next to "Together" for 2026, 2025 and 2024, and the
+    sustained one is the true employer. Reading last_known_institutions[0] picks
+    the artefact.
+    """
+    if not author.affiliations:
+        return None, 0.0, "no affiliation data"
+    scored = []
+    for name, years in author.affiliations:
+        if not years:
+            continue
+        recent = [y for y in years if y >= now - window]
+        if not recent:
+            continue
+        # sustained recent presence beats a single-year blip
+        scored.append((len(recent) + max(recent) / 10000, name, years, len(recent)))
+    if not scored:
+        newest = max((max(y) for _n, y in author.affiliations if y), default=None)
+        return None, 0.0, f"no affiliation inside the last {window} years (newest {newest})"
+    scored.sort(reverse=True)
+    _s, name, years, n_recent = scored[0]
+    rivals = [x for x in scored[1:] if x[3] >= n_recent]
+    conf = 0.9 if n_recent >= 2 and not rivals else (0.6 if not rivals else 0.4)
+    reason = f"{name} in {', '.join(str(y) for y in years[:4])}"
+    if rivals:
+        reason += f"; contested by {rivals[0][1]}"
+    return name, conf, reason

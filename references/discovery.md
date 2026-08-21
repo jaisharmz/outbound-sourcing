@@ -132,6 +132,32 @@ is more dangerous than one that errors**, because nothing downstream flags it. W
 result is thinner than the source should be able to produce, treat that as a signal to look
 harder rather than as a finding.
 
+## OpenAlex: read `affiliations`, never `last_known_institutions[0]`
+
+Worth its own note because getting it wrong produced a confident, plausible,
+completely incorrect answer — and then a wrong conclusion *about* the source.
+
+`last_known_institutions` is a list whose order is not recency. Taking `[0]` gives
+"Berkeley College" for a Together AI researcher and "BioQ Pharma" for a Stanford one.
+On that reading the field looks like bad data, and the natural conclusion is that the
+source cannot be trusted for affiliations at all. That conclusion was wrong.
+
+`affiliations[]` carries each institution with the years it was observed. Ranked on
+**sustained recency** — how many of the last three years, not just the newest — it
+resolves correctly in 6–7 of 8 spot checks, and the failures arrive with low confidence
+rather than confidently wrong. A single recent year next to a multi-year run is usually a
+parsing artefact: "Berkeley College [2026]" beside "Together [2026, 2025, 2024]".
+
+One real defect remains: **OpenAlex conflates some distinct people into one author
+record.** "Junxiong Wang" carries 198 works and 8,308 citations and resolves at high
+confidence while being at least two researchers. The tell is a works count wildly out of
+line with career stage — a second-year PhD student does not have 198 papers.
+
+The general lesson, which is the one that keeps recurring: when a structured source looks
+like bad data, check whether you are reading the wrong field before concluding the source
+is unreliable. A wrong conclusion about a source is more expensive than a wrong value,
+because it makes you discard something that works.
+
 ## Caching
 
 Cache every fetch to `state/cache/`, keyed by URL hash. Re-runs get cheaper, and the user
