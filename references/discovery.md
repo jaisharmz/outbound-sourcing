@@ -235,3 +235,72 @@ a different fix and they are not equally tractable:
 `person_pages.find` already records `tried` and returns a status that separates
 `not_found` from `no_email`, so the first two buckets are countable now without
 new instrumentation.
+
+
+## Plausible wrong answers
+
+The recurring failure in this system is not a broken result, which is obvious and
+gets fixed. It is a **well-formed, confident, wrong** one, which survives review
+because there is nothing on its surface to object to.
+
+### Cursor Insight Ltd. — a real company with the wrong name
+
+Seeding a company from OpenAlex affiliation strings matches the company name
+against what authors typed about themselves. `Cursor` returned 25 people. Two
+guards were added and both worked as designed:
+
+- **founding year** — Cursor (Anysphere) was founded in 2022, so pre-2022
+  matches are the ordinary English word. This removed Spanish ecology prose from
+  1990 that happened to contain "cursor".
+- **prose test** — a real affiliation is a short comma-delimited address
+  (`Groq, Inc, Palo Alto, CA, USA`); a biography is a sentence. This removed
+  "Kam L. Wong is Vice President of Kambea Industries…", which is how `Etched`
+  matched the *verb* in semiconductor abstracts back to 1991.
+
+Eight people passed both. All eight work at **Cursor Insight Ltd.**, a London
+handwriting-analytics firm: `Cursor Insight Ltd., 20-22 Wenlock Road, N17GU
+London, United Kingdom`. Recent, correctly formatted, genuinely first-party, and
+a completely different company.
+
+**No heuristic separates them.** The affiliation line is not defective in any
+way a rule can detect — it is a correct answer to the question "who says they
+work somewhere called Cursor". Only knowing that two companies share a name
+resolves it, so the fix is an explicit per-company exclusion (`EXCLUDE_PATTERNS`)
+rather than a smarter test.
+
+**Why this matters beyond Cursor.** The review gate cannot catch this either. A
+reviewer sees a real name, a real company, a real address and a real citation.
+Everything checks out, because everything *is* true -- about a different
+organisation. The same shape recurs:
+
+| the plausible wrong answer | what made it wrong | what caught it |
+| --- | --- | --- |
+| Cursor Insight Ltd. | different company, same name | knowing they differ; nothing else |
+| Kaitlyn Zhou "at Together AI" | an invited talk, not employment | reading the sentence around the match |
+| OpenAlex `last_known_institutions[0]` | an unordered list read as ranked | checking the field's contract |
+| a16z portfolio "no current investments" | 855 companies in a `data-` attribute | curling raw HTML |
+| `hate@spam.net` on a real page | a trap planted for scrapers | a denylist |
+| `web@zvfh.dev` | a role account, not a person | a prefix rule |
+
+The common defence is not a better heuristic. It is **checking the claim against
+a second, independent source** before it becomes a contact -- and where that is
+impossible, encoding the knowledge explicitly and saying so in the code.
+
+## Channels by population
+
+The personal-page channel is not universal. Measured 2026-08-21:
+
+| population | example | personal page with an address | what works instead |
+| --- | --- | --- | --- |
+| academically-publishing ML research | Together AI | 13 of 42 | personal pages (github.io, custom domains) |
+| systems and hardware | Groq | 2 of 72, both unusable | **paper first pages** |
+| non-publishing product companies | Baseten, Fireworks | 0 | neither; needs another channel entirely |
+
+Groq had 72 entry points and 48 of them had no page at all. Its people publish at
+ISCA/MICRO/ASPLOS rather than blogging, and those papers print author emails at
+the company domain under the title. `outbound paper-emails Groq --domain
+groq.com` recovered 8 named, first-party `@groq.com` addresses in about 20
+seconds from a single paper, and measured the domain convention
+(`first_initial_last`, 7 samples) which then applies to the other 64 people.
+
+Pick the channel from the population, not the other way round.

@@ -135,3 +135,28 @@ def test_role_addresses_are_not_people():
 
     assert emails_on("", "web@zvfh.dev or ashay@zvfh.dev") == ["ashay@zvfh.dev"]
     assert emails_on("", "info@lab.edu and careers@lab.edu") == []
+
+
+def test_brace_form_addresses_are_expanded():
+    """Academic first pages compress shared domains as {a,b,c}@company.com. A
+    reader that only understands plain addresses finds nothing on exactly the
+    papers most likely to list a whole team."""
+    from scripts.paper_emails import emails_in
+
+    t = "Authors {alice,bob carol}@groq.com, also dave@groq.com, cited eve@mit.edu"
+    assert emails_in(t, "groq.com") == ["alice@groq.com", "bob@groq.com",
+                                        "carol@groq.com", "dave@groq.com"]
+    # The brace group must be stripped before the plain pass, or "b}@x" survives.
+    assert all("}" not in e for e in emails_in(t))
+
+
+def test_an_address_matching_no_author_is_left_unattributed():
+    """An address without an identity is the thing this channel exists to avoid,
+    so it is never guessed onto the nearest name."""
+    from scripts.paper_emails import PaperHit, pair
+
+    hit = PaperHit("1234", "T", ["dabts@groq.com", "mystery@groq.com"],
+                   ["Dennis Abts", "Someone Else"])
+    att, counts = pair(hit)
+    assert att == {"dabts@groq.com": "Dennis Abts"}
+    assert counts == {"first_initial_last": 1}

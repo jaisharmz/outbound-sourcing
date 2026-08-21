@@ -816,6 +816,58 @@ def candidates_from_pages(
                 "then ingest.", fg=typer.colors.YELLOW)
 
 
+@app.command("paper-emails")
+def paper_emails_cmd(
+    company: str = typer.Argument(...),
+    domain: str = typer.Option(..., "--domain"),
+    terms: Optional[str] = typer.Option(None, "--terms", help="extra search phrases, comma-sep"),
+    max_papers: int = typer.Option(10, "--max-papers"),
+    json_out: Optional[str] = typer.Option(None, "--json"),
+):
+    """Read author addresses off paper first pages. For the population personal
+    pages miss.
+
+    Together AI's researchers keep personal sites; Groq's do not -- 48 of 72 had
+    no page at all. Systems and hardware people publish at ISCA/MICRO/ASPLOS
+    instead, and those papers print author emails at the company domain under
+    the title. Same evidence contract: the address comes from a document the
+    person wrote, and the paper is the citation.
+    """
+    from . import meter
+    from .paper_emails import harvest, pair
+
+    extra = [t.strip() for t in (terms or "").split(",") if t.strip()]
+    hits = harvest(company, domain, extra_terms=extra, max_papers=max_papers)
+    rows, conventions = [], {}
+    for h in hits:
+        att, counts = pair(h)
+        for style, n in counts.items():
+            conventions[style] = conventions.get(style, 0) + n
+        typer.secho(f"\n  arxiv:{h.arxiv_id}  {h.title[:62]}", fg=typer.colors.CYAN)
+        for email, author in sorted(att.items(), key=lambda kv: kv[1]):
+            typer.echo(f"    {author[:26]:<28} {email}")
+            rows.append({"name": author, "email": email, "company": company,
+                         "arxiv_id": h.arxiv_id, "title_of_paper": h.title,
+                         "url": f"https://arxiv.org/abs/{h.arxiv_id}"})
+        for email in h.emails:
+            if email not in att:
+                typer.secho(f"    {'(unattributed)':<28} {email}", fg=typer.colors.YELLOW)
+
+    typer.echo(f"\n  {len(rows)} attributed address(es) at {domain} "
+               f"from {len(hits)} paper(s)")
+    if conventions:
+        top = max(conventions.items(), key=lambda kv: kv[1])
+        typer.echo(f"  domain convention: {top[0]} ({top[1]} sample(s)) "
+                   f"-- applies to colleagues not on these papers")
+    if not rows:
+        typer.secho("  no addresses. Either the papers are paywalled or the venue "
+                    "does not print them.", fg=typer.colors.YELLOW)
+    if json_out:
+        Path(json_out).write_text(json.dumps(rows, indent=2))
+        typer.echo(f"  wrote {json_out}")
+    meter.flush(label="paper-emails")
+
+
 @app.command("traverse-company")
 def traverse_company(
     name: str = typer.Argument(...),
