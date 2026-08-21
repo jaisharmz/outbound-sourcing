@@ -50,7 +50,12 @@ BOT_MARKERS = (
 # that slipped past the marker list: `flock-auditor`, `rasabot`, `rasa-aadlv`,
 # `piotr-reducto`. The last shape matters most -- an org-suffixed handle is a
 # login, not a name, and it cannot be matched to a title.
-BOT_NAME_RE = re.compile(r"(^|[^a-z])bot([^a-z]|$)|^[a-z0-9_-]+-(bot|ci|admin|auditor)$", re.I)
+BOT_NAME_RE = re.compile(
+    r"(^|[^a-z])bot([^a-z]|$)"          # 'bot' as its own word
+    r"|^[a-z0-9_-]+-(bot|ci|admin|auditor)$"   # flock-auditor
+    r"|^[a-z0-9_]*bot$",                # rasabot -- all-lowercase, bot suffix
+    re.I,
+)
 
 
 def looks_like_handle(name: str, domain: str) -> bool:
@@ -69,6 +74,13 @@ def looks_like_handle(name: str, domain: str) -> bool:
     if len(tokens) < 2:
         return not (n[:1].isupper() and n.isalpha() and len(n) > 2)
     return False
+
+
+def name_quality(name: str, domain: str) -> str:
+    """`name` | `partial` | `handle`. Only a full name can be matched to a title."""
+    if looks_like_handle(name, domain):
+        return "handle"
+    return "name" if name_is_usable(name, domain) else "partial"
 
 
 def name_is_usable(name: str, domain: str) -> bool:

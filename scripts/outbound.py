@@ -284,10 +284,12 @@ def harvest_github_cmd(
                 fresh = email in res.fresh
                 conn.execute(
                     "INSERT OR IGNORE INTO known_people (account_id, name, role, provenance,"
-                    " source_url, created_at) VALUES (?,?,?,?,?,?)",
+                    " source_url, email, email_observed_at, name_quality, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
                     (account_id, name or email.split("@")[0], "commit author",
                      "github_commit" if fresh else "github_commit_stale",
-                     f"https://github.com/{res.org}", utcnow()),
+                     f"https://github.com/{res.org}", email, when,
+                     gh.name_quality(name or "", res.domain), utcnow()),
                 )
             pattern, conf, used = gh.infer_pattern(res.addresses)
             conn.execute(

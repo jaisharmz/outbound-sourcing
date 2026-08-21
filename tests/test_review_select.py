@@ -75,3 +75,33 @@ def test_review_columns_expose_the_basis_and_its_sample_count():
     for col in ("email_basis", "email_pattern", "email_pattern_samples",
                 "email_pattern_confidence", "verification_status"):
         assert col in REVIEW_COLUMNS
+
+
+def test_risk_flags_name_what_could_be_wrong(conn):
+    """The gate is the only check between an inferred address and a stranger."""
+    from scripts.review import risk_flags
+
+    class R(dict):
+        def __getitem__(self, k): return self.get(k)
+
+    single = R(email_basis="inferred_from_pattern", email_pattern_samples=1,
+               email_pattern_confidence=1.0, verification_status="valid",
+               personalization="x", liveness_status="live", observed_at=None)
+    flags = " | ".join(risk_flags(single))
+    assert "INFERRED" in flags and "single-sample" in flags
+
+    mixed = R(email_basis="inferred_from_pattern", email_pattern_samples=8,
+              email_pattern_confidence=0.5, verification_status="valid",
+              personalization="x", liveness_status="live", observed_at=None)
+    assert "close to a guess" in " | ".join(risk_flags(mixed))
+
+    stale = R(email_basis="observed", email_pattern_samples=3,
+              email_pattern_confidence=0.9, verification_status="valid",
+              personalization="x", liveness_status="live",
+              observed_at="2021-01-01T00:00:00+00:00")
+    assert "years ago" in " | ".join(risk_flags(stale))
+
+    clean = R(email_basis="observed", email_pattern_samples=3,
+              email_pattern_confidence=0.9, verification_status="valid",
+              personalization="x", liveness_status="live", observed_at=None)
+    assert risk_flags(clean) == []
