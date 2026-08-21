@@ -177,3 +177,19 @@ def test_display_keeps_brand_words_that_look_like_suffixes():
     assert d("EPAL, INC.") == "EPAL"
     assert d("Anthropic, PBC") == "Anthropic"
     assert d("Muse App Inc") == "Muse App"
+
+
+def test_test_send_hash_matches_the_campaign_it_records(config: Config, tmp_path):
+    """The gate's whole promise is that what you tested is what sends. A test
+    send that renders base templates while recording a campaign name breaks it
+    silently -- it only shows up when the two template sets happen to differ."""
+    from scripts.outbound import _render_for, _fixture_contact
+    from scripts.db import open_db
+    from scripts.templates import template_hash
+
+    campaign = next(iter(config.campaigns.campaigns))
+    conn = open_db(str(tmp_path / "t.db"))
+    contact, account = _fixture_contact()
+    rendered = _render_for(config, conn, "step1_initial", contact, account, campaign)
+    assert rendered.campaign == campaign
+    assert rendered.template_hash == template_hash(config, campaign)

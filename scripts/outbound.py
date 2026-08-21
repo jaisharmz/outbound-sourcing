@@ -475,6 +475,10 @@ def _render_for(cfg: Config, conn, step_id: str, contact: dict, account: dict,
         contact=contact, account=account, to=contact["email"],
         cc=cc.cc, bcc=cc.bcc,
         from_header=mailbox.from_.header(), reply_to=mailbox.reply_to,
+        # Without this the preview and the test send both rendered base
+        # templates and recorded the base hash whatever --campaign said, so the
+        # gate compared against templates the campaign would never use.
+        campaign=campaign,
     )
 
 
@@ -611,7 +615,7 @@ def test_email(
 ):
     """Send a fully real email to test_recipient and print what actually went out.
 
-    Real template, real persona, real attachments, real CC list, real footer,
+    Real template, real persona, real attachments, real CC list,
     real headers. This is the gate: the scheduler refuses to send from a mailbox
     that has never passed one, and refuses to start a campaign whose templates
     changed since the last one.
