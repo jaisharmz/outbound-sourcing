@@ -913,6 +913,32 @@ def ask_cmd(
     typer.echo(q().render())
 
 
+@app.command("skip")
+def skip_cmd(
+    kind: str = typer.Argument(..., help=" | ".join(("leadership", "namesake",
+                                                    "no-address", "inferred",
+                                                    "wrong-employer", "answered",
+                                                    "suppressed"))),
+    subject: str = typer.Option(..., "--subject", help="the person"),
+    context: str = typer.Option("", "--context",
+                                help="the page, company, or answer given"),
+):
+    """Render one skip line, saying whether it is recoverable or final.
+
+    Same reason as `ask`: the phrasing carries the meaning. Recoverable and final
+    need different reactions from the operator -- one is a name to chase by hand,
+    the other a name to forget -- and that distinction survives only if it is
+    written the same way every time.
+    """
+    from . import ask as A
+
+    build = A.SKIP_BUILDERS.get(kind)
+    if not build:
+        raise typer.BadParameter(f"kind must be one of {', '.join(A.SKIP_BUILDERS)}")
+    skip = build(subject, context) if context else build(subject, "")
+    typer.echo(f"{skip.name}: {skip.line()}")
+
+
 @app.command("doctor")
 def doctor_cmd(
     config: Optional[str] = typer.Option(None, "--config"),

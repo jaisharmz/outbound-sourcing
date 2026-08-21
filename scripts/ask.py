@@ -86,6 +86,32 @@ class Session:
         self.decisions.append(d)
         return d
 
+    def delegated_line(self) -> str:
+        """One line for what a standing answer decided without being asked again.
+
+        Two keystrokes can decide most of a run, and the operator should be able
+        to see how much at a glance rather than counting bracketed notes.
+        """
+        from collections import Counter
+
+        counts = Counter()
+        for d in self.decisions:
+            if d.asked or d.why.startswith("autonomy"):
+                continue
+            counts[(d.question.kind, "included" if d.yes else "skipped",
+                    self.standing.get(d.question.kind, "?"))] += 1
+        if not counts:
+            return ""
+        nouns = {EXPAND_COMPANY: ("company", "companies"),
+                 EXPAND_INDUSTRY: ("field", "fields"),
+                 SENIORITY: ("person", "people"),
+                 AMBIGUOUS: ("claim", "claims")}
+        parts = []
+        for (kind, verb, ans), n in counts.most_common():
+            one, many = nouns.get(kind, ("item", "items"))
+            parts.append(f"{n} {one if n == 1 else many} {verb} by '{ans}'")
+        return "standing answers decided: " + ", ".join(parts)
+
     def summary(self) -> list[str]:
         """Every expansion decision, however it was made. Nothing invisible."""
         out = []
@@ -135,10 +161,81 @@ def ambiguous_claim(name: str, what: str) -> Question:
         ("y", "n"))
 
 
+# ----------------------------------------------------------------- skips
+#
+# Why someone did not make it, and whether that is the end of it. The
+# distinction decides what the operator does next: a final skip is a name to
+# forget, a recoverable one is a name to chase by hand or re-run with more
+# evidence. Collapsing them into one list makes every skip look like a dead end.
+
+FINAL, RECOVERABLE = "final", "recoverable"
+
+
+@dataclass
+class Skip:
+    name: str
+    reason: str
+    kind: str = FINAL
+    unblocks: str = ""      # what would change the answer, when recoverable
+
+    def line(self) -> str:
+        if self.kind == RECOVERABLE and self.unblocks:
+            return f"{self.reason} -- recoverable: {self.unblocks}"
+        if self.kind == RECOVERABLE:
+            return f"{self.reason} -- recoverable"
+        return f"{self.reason} -- final"
+
+
+# The skips the pipeline actually produces, with the judgement already made so
+# callers do not each decide it differently.
+def skip_leadership(name: str, where: str) -> Skip:
+    return Skip(name, f"on the founders/leadership page ({where})", FINAL)
+
+
+def skip_namesake(name: str, company: str) -> Skip:
+    return Skip(name, f"page never mentions {company}", RECOVERABLE,
+                f"find a page or paper that ties {name} to {company} and re-run")
+
+
+def skip_no_address(name: str) -> Skip:
+    return Skip(name, "no address found anywhere", RECOVERABLE,
+                "a newer paper, a personal page, or a GitHub org would give one")
+
+
+def skip_inferred(name: str) -> Skip:
+    return Skip(name, "address inferred from the domain pattern, never observed",
+                RECOVERABLE, "confirm it on a page or a paper first")
+
+
+def skip_wrong_employer(name: str, saw: str) -> Skip:
+    return Skip(name, saw, FINAL)
+
+
+def skip_answered(name: str, answer: str) -> Skip:
+    return Skip(name, f"you answered '{answer}' to this class", RECOVERABLE,
+                "re-run and answer differently")
+
+
+def skip_suppressed(name: str) -> Skip:
+    return Skip(name, "suppressed: they asked not to be contacted", FINAL)
+
+
+SKIP_BUILDERS = {
+    "leadership": skip_leadership,
+    "namesake": skip_namesake,
+    "no-address": lambda name, ctx="": skip_no_address(name),
+    "inferred": lambda name, ctx="": skip_inferred(name),
+    "wrong-employer": skip_wrong_employer,
+    "answered": skip_answered,
+    "suppressed": lambda name, ctx="": skip_suppressed(name),
+}
+
+
 # --------------------------------------------------------------- run summary
 
 
-def run_summary(drafted: list[tuple[str, str]], skipped: list[tuple[str, str]],
+def run_summary(drafted: list[tuple[str, str]],
+                skipped: "list[Skip] | list[tuple[str, str]]",
                 session: "Session | None" = None,
                 read_first: list[str] | None = None) -> str:
     """One clear statement of what happened, in the operator's terms.
@@ -159,16 +256,27 @@ def run_summary(drafted: list[tuple[str, str]], skipped: list[tuple[str, str]],
         lines.append(f"    {count:>2}  {company}")
 
     if skipped:
-        reasons = Counter(r for _, r in skipped)
+        # Accept bare tuples so older callers keep working; they are treated as
+        # final, which is the conservative reading.
+        skips = [s if isinstance(s, Skip) else Skip(s[0], s[1], FINAL)
+                 for s in skipped]
         lines.append("")
-        lines.append(f"{len(skipped)} skipped:")
-        for reason, count in reasons.most_common():
+        n_rec = sum(1 for s in skips if s.kind == RECOVERABLE)
+        head = f"{len(skips)} skipped"
+        if n_rec:
+            head += f" ({n_rec} recoverable, {len(skips) - n_rec} final)"
+        lines.append(head + ":")
+        for reason, count in Counter(s.line() for s in skips).most_common():
             lines.append(f"    {count:>2}  {reason}")
 
     if session and session.decisions:
         lines.append("")
         lines.append("Expansion decisions:")
         lines.extend(session.summary())
+        # How much of the run was delegated with two keystrokes.
+        delegated = session.delegated_line()
+        if delegated:
+            lines.append(f"  {delegated}")
 
     lines.append("")
     if read_first:

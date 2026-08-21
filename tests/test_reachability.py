@@ -86,7 +86,12 @@ def _is_typer_command(node: ast.FunctionDef) -> bool:
 
 def test_no_public_function_is_dead():
     """Catches the suppress_lab shape: a function inside a live module that
-    nothing in production ever calls, kept alive only by its own test."""
+    nothing in production ever references, kept alive only by its own test.
+
+    Counts references rather than calls, because a function can be reached by
+    being named -- in a dispatch table, or passed as an argument -- and demanding
+    a call expression reports those as dead.
+    """
     mods = _modules()
     body = "\n".join(p.read_text() for p in mods.values())
     dead = []
@@ -99,9 +104,15 @@ def test_no_public_function_is_dead():
                 continue
             if _is_typer_command(node):
                 continue
-            calls = len(re.findall(rf"\b{re.escape(name)}\s*\(", body))
-            defs = len(re.findall(rf"def {re.escape(name)}\s*\(", body))
-            if calls <= defs:
+            # Any reference counts, not just a call expression. A function
+            # named as a dispatch-table value -- {"namesake": skip_namesake} --
+            # is reachable, and requiring `name(` reported those as dead. A
+            # genuinely dead function appears exactly once: in its own def.
+            # A preceding dot is allowed: meter.bump and G.upsert_node are
+            # calls. Excluding them reported half the codebase as dead.
+            refs = len(re.findall(rf"(?<![\w]){re.escape(name)}\b", body))
+            defs = len(re.findall(rf"def {re.escape(name)}\b", body))
+            if refs <= defs:
                 dead.append(f"{mod}.{name}")
     assert not dead, (
         f"public functions with no caller in scripts/: {dead}. A test is not a "

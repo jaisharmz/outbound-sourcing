@@ -103,3 +103,40 @@ def test_the_summary_states_the_outcome_not_the_mechanics():
 def test_the_summary_says_something_when_nothing_is_flagged():
     out = A.run_summary(drafted=[("A", "X")], skipped=[], read_first=[])
     assert "Read a couple anyway" in out
+
+
+def test_a_skip_says_whether_it_is_worth_chasing():
+    """Recoverable and final need different reactions: one is a name to chase by
+    hand, the other a name to forget. Collapsing them makes every skip look like
+    a dead end."""
+    final = A.skip_leadership("D I", "fireworks.ai/team")
+    assert final.kind == A.FINAL and "final" in final.line()
+
+    rec = A.skip_namesake("Joshua Hill", "Baseten")
+    assert rec.kind == A.RECOVERABLE
+    assert "recoverable" in rec.line()
+    assert "re-run" in rec.line(), "a recoverable skip must say what would change it"
+
+    out = A.run_summary(drafted=[("A", "X")], skipped=[final, rec])
+    assert "2 skipped (1 recoverable, 1 final)" in out
+
+
+def test_the_summary_counts_what_standing_answers_decided():
+    """Two keystrokes can decide most of a run; the operator should see how much
+    without counting bracketed notes."""
+    s = A.Session()
+    s.resolve(A.company_found(4, "Modal", "Baseten"), lambda q: "always")
+    s.resolve(A.company_found(2, "Replicate", "Modal"), lambda q: "y")
+    s.resolve(A.senior_person("P", "VP", "X"), lambda q: "never")
+    s.resolve(A.senior_person("Q", "Director", "Y"), lambda q: "y")
+
+    line = s.delegated_line()
+    assert "1 company included by 'always'" in line
+    assert "1 person skipped by 'never'" in line, f"bad pluralisation: {line}"
+    assert line in A.run_summary([("A", "X")], [], session=s)
+
+
+def test_nothing_delegated_says_nothing():
+    s = A.Session()
+    s.resolve(A.company_found(1, "M", "B"), lambda q: "y")
+    assert s.delegated_line() == ""
