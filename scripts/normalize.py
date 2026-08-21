@@ -10,13 +10,24 @@ import unicodedata
 LEGAL_SUFFIXES = (
     "inc", "inc.", "llc", "l.l.c.", "ltd", "ltd.", "limited", "corp", "corp.",
     "corporation", "co", "co.", "gmbh", "sa", "s.a.", "bv", "b.v.", "ag", "plc",
-    "pbc", "holdings",
+    "pbc", "incorporated", "incorporated.",
 )
 
 # Additionally folded away when building a dedupe key, so "Vals AI" and "Vals"
 # match. Never removed for display: "your team at Together" is wrong, and
 # stripping "AI" from an AI company's name is the specific way it goes wrong.
 NORMALIZE_ONLY_SUFFIXES = ("labs", "lab", "ai", "technologies", "technology")
+
+# Words that are part of a brand and must survive display trimming even if they
+# resemble a suffix. Checked before anything is removed.
+DISPLAY_KEEP = {
+    "ai", "labs", "lab", "systems", "technologies", "technology", "research",
+    "health", "bio", "robotics", "computing", "dynamics", "networks", "security",
+    "intelligence", "sciences", "science", "works", "studio", "studios", "space",
+    # Reads as part of the brand rather than a legal form: "Proof Holdings"
+    # trimmed to "Proof" is a different company's name.
+    "holdings",
+}
 
 FREE_MAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "hotmail.com", "outlook.com",
@@ -101,6 +112,9 @@ def display_company(name: str) -> str:
     """
     s = name.strip().rstrip(".,")
     tokens = s.replace(",", " ").split()
-    while tokens and tokens[-1].lower().strip(".") in LEGAL_SUFFIXES:
+    while tokens:
+        last = tokens[-1].lower().strip(".")
+        if last in DISPLAY_KEEP or last not in LEGAL_SUFFIXES:
+            break
         tokens.pop()
     return " ".join(tokens) if tokens else name.strip()

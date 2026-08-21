@@ -426,6 +426,38 @@ class Campaigns(Strict):
         return self.campaigns[name]
 
 
+class ExcludedLab(Strict):
+    name: str
+    institution: str | None = None
+    reason: str = ""
+    aliases: list[str] = Field(default_factory=list)
+
+    def matches(self, text: str) -> bool:
+        t = (text or "").lower()
+        for token in [self.name, *self.aliases]:
+            if token and token.lower() in t:
+                return True
+        return False
+
+
+class PersonalExclusions(Strict):
+    """People the operator already knows. Checked at discovery, not at send."""
+
+    labs: list[ExcludedLab] = Field(default_factory=list)
+    people: list[str] = Field(default_factory=list)
+    companies: list[str] = Field(default_factory=list)
+
+    def excluded_lab(self, text: str) -> ExcludedLab | None:
+        for lab in self.labs:
+            if lab.matches(text):
+                return lab
+        return None
+
+    def excluded_person(self, name: str) -> bool:
+        n = (name or "").strip().lower()
+        return any(p.strip().lower() == n for p in self.people)
+
+
 class FundSpec(BaseModel):
     """How to read one fund's portfolio page. Keys vary by strategy."""
 
@@ -543,6 +575,11 @@ class Config:
         self.mailboxes: Mailboxes = _load(Mailboxes, self.root / "mailboxes.yaml")
         self.sequence: Sequence = _load(Sequence, self.root / "sequence.yaml")
         self.cc: CCConfig = _load(CCConfig, self.root / "cc.yaml")
+        self.personal_exclusions: PersonalExclusions = (
+            _load(PersonalExclusions, self.root / "personal_exclusions.yaml")
+            if (self.root / "personal_exclusions.yaml").exists()
+            else PersonalExclusions()
+        )
         self.funds: Funds = (
             _load(Funds, self.root / "funds.yaml")
             if (self.root / "funds.yaml").exists()

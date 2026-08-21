@@ -1,0 +1,15 @@
+# People and groups this operator must not be sourced into a campaign.
+#
+# Distinct from suppression.csv, which records opt-outs and bounces. This is
+# "do not contact through this system because I already know them", and it is
+# checked at discovery so a name never reaches the queue in the first place.
+
+labs:
+  - name: Example Advisor
+    institution: Example University
+    reason: The operator is a member of this lab; a cold sequence is the wrong instrument.
+    aliases: [Example Advisor's group]
+
+people: []
+
+companies: []

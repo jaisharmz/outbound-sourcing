@@ -142,3 +142,19 @@ def test_company_display_keeps_ai_in_the_name(config: Config):
     assert display_company("Anthropic, PBC") == "Anthropic"
     # and the dedupe key still folds them, so Vals AI matches Vals
     assert normalize_company("Vals AI") == normalize_company("Vals")
+
+
+def test_display_keeps_brand_words_that_look_like_suffixes():
+    """Audited across the whole 667-name roster; these are the shapes that
+    appear. A keep-list, because 'your team at Together' shipped once already."""
+    from scripts.normalize import display_company as d
+    # kept: part of the brand
+    for name in ("Together AI", "Vals AI", "Dynamic Labs", "Proof Holdings",
+                 "Scene Infrastructure", "Cowboy Space", "Applied Intuition"):
+        assert d(name) == name, name
+    # removed: a legal form nobody writes in a sentence
+    assert d("Kepler Systems, Inc.") == "Kepler Systems"
+    assert d("Warbler Labs, Incorporated") == "Warbler Labs"
+    assert d("EPAL, INC.") == "EPAL"
+    assert d("Anthropic, PBC") == "Anthropic"
+    assert d("Muse App Inc") == "Muse App"
