@@ -134,6 +134,13 @@ class DomainResult:
     # email -> (name, most recent commit ISO date)
     addresses: dict[str, tuple[str, str]] = field(default_factory=dict)
     filtered: int = 0
+    repos_seen: int = 0
+    archived_repos: int = 0
+
+    @property
+    def newest_commit_at(self) -> str | None:
+        dates = [when for _n, when in self.addresses.values() if when]
+        return max(dates) if dates else None
 
     @property
     def fresh(self) -> dict[str, tuple[str, str]]:
@@ -199,6 +206,8 @@ def harvest_domain(client: Client, company: str, domain: str, *,
         return out
 
     saw_commits = False
+    out.repos_seen = len(repo_list[:repos])
+    out.archived_repos = sum(1 for r in repo_list[:repos] if r.get("archived"))
     for repo in repo_list[:repos]:
         commits, status = client.get(
             f"/repos/{repo['full_name']}/commits?per_page={per_repo}")

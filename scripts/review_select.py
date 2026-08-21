@@ -67,3 +67,19 @@ def choose(conn: sqlite3.Connection, *, campaign: str | None = None,
         for r in rows:
             picked.append(Preview(r["id"], "filler, no unrepresented axis left"))
     return picked
+
+
+# Columns the review export must carry alongside each row, because they are what
+# the reviewer is actually judging. `catch_all` sends freely now, so the gate is
+# the only check between an inferred address and a stranger's inbox.
+REVIEW_COLUMNS = """
+SELECT c.name, c.title, a.name AS company, c.email,
+       c.email_basis,                       -- observed | inferred_from_pattern
+       a.email_pattern,                     -- the convention it was inferred from
+       a.email_pattern_samples,             -- how many addresses taught us that
+       a.email_pattern_confidence,
+       c.verification_status, c.confidence,
+       c.personalization, c.personalization_source_url,
+       a.newest_commit_at                   -- recency signal, not proof of independence
+  FROM contacts c JOIN accounts a ON a.id = c.account_id
+"""

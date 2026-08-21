@@ -290,12 +290,16 @@ def harvest_github_cmd(
                      f"https://github.com/{res.org}", utcnow()),
                 )
             pattern, conf, used = gh.infer_pattern(res.addresses)
-            if pattern:
-                conn.execute(
-                    "UPDATE accounts SET email_pattern = ?, email_pattern_confidence = ?,"
-                    " email_pattern_evidence = ? WHERE id = ?",
-                    (pattern, conf, ",".join(sorted(used))[:500], account_id),
-                )
+            conn.execute(
+                "UPDATE accounts SET email_pattern = ?, email_pattern_confidence = ?,"
+                " email_pattern_evidence = ?, email_pattern_samples = ?,"
+                " newest_commit_at = ?, github_org = ?, github_archived_repos = ?"
+                " WHERE id = ?",
+                (pattern, conf if pattern else None,
+                 ",".join(sorted(used))[:500] if pattern else None,
+                 len(used) if pattern else None,
+                 res.newest_commit_at, res.org, res.archived_repos, account_id),
+            )
 
     typer.echo("\noutcomes:")
     for k in sorted(statuses):

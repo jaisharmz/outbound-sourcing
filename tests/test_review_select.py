@@ -66,3 +66,12 @@ def test_approved_rows_are_not_previewed(conn):
     add(conn, "Already Done", pz=None)
     conn.execute("UPDATE contacts SET approved = 1")
     assert choose(conn) == []
+
+
+def test_review_columns_expose_the_basis_and_its_sample_count():
+    """`first.last` at confidence 1.00 from three addresses and from one are very
+    different claims, and the reviewer is the only check on either."""
+    from scripts.review_select import REVIEW_COLUMNS
+    for col in ("email_basis", "email_pattern", "email_pattern_samples",
+                "email_pattern_confidence", "verification_status"):
+        assert col in REVIEW_COLUMNS
