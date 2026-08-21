@@ -172,3 +172,39 @@ def test_old_papers_do_not_prove_current_employment():
     assert paper_year_month("2206.11062v1") == (2022, 6)
     assert paper_year_month("2407.03651v2") == (2024, 7)
     assert paper_year_month("nonsense") is None
+
+
+def test_a_rewritten_from_is_detected(monkeypatch):
+    """Gmail silently rewrites From to the authenticated account unless the
+    address is a verified alias. The sent copy shows what was asked for and the
+    delivered copy shows what the recipient sees, so the mismatch is visible
+    only by comparing them -- and it changes who the recipient thinks is
+    writing."""
+    from email.utils import parseaddr
+
+    sent = "Jai Sharma <jais@berkeley.edu>"
+    delivered = ("From: Jai Sharma <jaisharmaus@gmail.com>\n"
+                 "Reply-To: jais@berkeley.edu\n")
+    want = parseaddr(sent)[1].lower()
+    got = next(parseaddr(l.partition(":")[2])[1].lower()
+               for l in delivered.splitlines() if l.lower().startswith("from:"))
+    assert want != got, "this fixture exists because the rewrite really happens"
+
+    ok_delivered = "From: Jai Sharma <jais@berkeley.edu>\n"
+    got_ok = next(parseaddr(l.partition(":")[2])[1].lower()
+                  for l in ok_delivered.splitlines() if l.lower().startswith("from:"))
+    assert want == got_ok
+
+
+def test_reply_to_survives_a_from_rewrite():
+    """Replies are the metric. Even with From rewritten, Reply-To is what a
+    client uses when the recipient hits reply, so the reply path is intact
+    while the display name is not."""
+    from pathlib import Path
+
+    from scripts.config import Config
+
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    mb = cfg.mailboxes.get("gmail-smtp")
+    assert mb.reply_to == "jais@berkeley.edu"
+    assert mb.from_.address == "jais@berkeley.edu"

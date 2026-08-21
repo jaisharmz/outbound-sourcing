@@ -1250,6 +1250,36 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
             "UPDATE test_sends SET headers = ? WHERE id = (SELECT MAX(id) FROM test_sends)",
             ((result.headers or "") + "\n\n--- delivered ---\n" + delivered,),
         )
+        # Gmail silently rewrites From to the authenticated account unless the
+        # address is a verified "Send mail as" alias. The sent copy shows what we
+        # asked for and the delivered copy shows what the recipient sees, so the
+        # mismatch is only visible here -- and it changes who the recipient
+        # thinks is writing, which is the whole point of the From line.
+        from email.utils import parseaddr as _pa
+
+        want = _pa(rendered.from_header)[1].lower()
+        got = ""
+        for line in delivered.splitlines():
+            if line.lower().startswith("from:"):
+                got = _pa(line.partition(":")[2])[1].lower()
+                break
+        if want and got and want != got:
+            typer.secho(
+                f"\n  FROM WAS REWRITTEN IN TRANSIT.\n"
+                f"  configured: {want}\n"
+                f"  delivered as: {got}\n"
+                f"  Gmail only honours a From address that is a verified "
+                f"'Send mail as' alias on the sending account. Until {want} is "
+                f"verified, every recipient sees {got} no matter what the config "
+                f"says.\n"
+                f"  Fix in Gmail: Settings -> Accounts and Import -> 'Send mail as' "
+                f"-> Add another email address -> {want}, then enter the code Gmail "
+                f"emails to that address. Re-run this test afterwards.",
+                fg=typer.colors.RED)
+        elif want and got:
+            typer.secho(f"\n  From verified end to end: delivered as {got}",
+                        fg=typer.colors.GREEN)
+
         if not any(l.lower().startswith("authentication-results") for l in delivered.splitlines()):
             typer.secho(
                 "\n  NO AUTHENTICATION RESULTS ON THIS MESSAGE.\n"
