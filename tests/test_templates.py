@@ -45,15 +45,43 @@ def test_subject_is_substituted(config: Config):
     assert "{{" not in email.subject
 
 
+def _persona_ctx(config):
+    """The persona mapping templates see, matching templates._context."""
+    p = config.persona
+    return {"name": p.name, "first_name": p.first_name, "role": p.role,
+            "org": p.org, "links": p.links, "link_lines": p.link_lines,
+            "project_bullets": p.project_bullets, "signature": p.signature,
+            "projects": [{"org": x.org, "blurb": x.blurb} for x in p.projects]}
+
+
 def test_nothing_is_appended_to_a_rendered_body(config: Config):
     """What the template says is what sends. These are personal emails proposing
     collaboration; an auto-generated footer makes them read like a mail merge.
     The opt-out obligation is met by honoring requests, not advertising them."""
+    from jinja2 import Environment, StrictUndefined
+
+    from scripts.templates import html_to_text, looks_like_html, resolve_documents
+
+    env = Environment(undefined=StrictUndefined, keep_trailing_newline=True,
+                      trim_blocks=True, lstrip_blocks=True)
     for step in config.sequence.steps:
         email = render(config, step, contact=CONTACT, account=ACCOUNT, to=CONTACT["email"])
         assert "-- " not in email.body                  # no signature separator
         assert "unsubscribe" not in email.body.lower()
-        assert email.body.rstrip("\n").endswith(config.persona.signature.splitlines()[-1])
+
+        # The property, stated directly rather than approximated: the body is
+        # exactly what the template renders to, with nothing added after it.
+        # Checked for every step and for both template formats.
+        raw = (config.template_path(step, None)
+               .read_text().split("---", 2)[2].lstrip("\n"))
+        _atts, links = resolve_documents(config, step)
+        expected = env.from_string(raw).render(
+            contact=CONTACT, account=ACCOUNT, persona=_persona_ctx(config),
+            personalization=CONTACT.get("personalization"),
+            campaign={"name": config.campaign.name},
+            document_links=[{"name": n, "url": u} for n, u in links])
+        assert email.body == (html_to_text(expected) if looks_like_html(expected)
+                              else expected)
 
 
 def test_render_is_byte_for_byte_the_template(config: Config):
@@ -65,6 +93,7 @@ def test_render_is_byte_for_byte_the_template(config: Config):
     raw = (config.templates_dir / step.template).read_text().split("---", 2)[2].lstrip("\n")
     env = Environment(undefined=StrictUndefined, keep_trailing_newline=True,
                       trim_blocks=True, lstrip_blocks=True)
+    from scripts.templates import html_to_text, looks_like_html
     from scripts.templates import resolve_documents
 
     email = render(config, step, contact=CONTACT, account=ACCOUNT, to=CONTACT["email"])
@@ -74,7 +103,10 @@ def test_render_is_byte_for_byte_the_template(config: Config):
         personalization=CONTACT.get("personalization"),
         document_links=[{"name": n, "url": u} for n, u in links],
     )
-    assert email.body == expected
+    # An HTML template's text part is derived from the HTML, so compare against
+    # the same derivation rather than the raw render.
+    assert email.body == (html_to_text(expected) if looks_like_html(expected)
+                          else expected)
 
 
 def test_undefined_variable_fails_loudly(config: Config):
@@ -130,8 +162,9 @@ def test_attachments_and_links_coexist_in_one_email(config: Config):
     step.links = {"Project portfolio": "https://drive.example.test/abc"}
     email = render(config, step, contact=CONTACT, account=ACCOUNT, to=CONTACT["email"])
     assert len(email.attachments) == 2
-    assert "https://drive.example.test/abc" in email.body
-    assert "Project portfolio" in email.body
+    # The URL lives in the HTML part; the text part carries the anchor text.
+    body = email.body_html or email.body
+    assert "https://drive.example.test/abc" in body
 
 
 def test_a_step_with_no_links_renders_none(config: Config):
