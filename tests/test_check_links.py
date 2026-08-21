@@ -77,3 +77,26 @@ def test_classification(monkeypatch, body, disposition, expect):
 
     monkeypatch.setattr(CL.urllib.request, "urlopen", lambda *a, **k: R())
     assert CL.check_url("https://example.com/a.pdf")[0] == expect
+
+
+def test_a_removed_link_does_not_block_forever(conn, config_root, monkeypatch):
+    """A URL dropped from the config leaves its last check behind, carrying the
+    fingerprint of the set it belonged to. Reading those rows made removing a
+    link block the gate permanently -- no later check updates a row for a URL
+    that is no longer looked up."""
+    _stub(monkeypatch)
+    config = Config(config_root)
+    CL.check_all(conn, config)
+    assert CL.gate(conn, config) == []
+
+    path = config_root / "sequence.yaml"
+    text = path.read_text()
+    start = text.index("      - name: Example large document")
+    end = text.index("reply_templates:")
+    path.write_text(text[:start] + "\n" + text[end:])
+
+    trimmed = Config(config_root)
+    blockers = CL.gate(conn, trimmed)
+    assert blockers, "removing a link should require a re-check"
+    CL.check_all(conn, trimmed)
+    assert CL.gate(conn, trimmed) == [], "the tombstone row must not block after re-check"

@@ -91,17 +91,33 @@ def check_all(conn: sqlite3.Connection, config: Config,
     return results
 
 
+def current_urls(config: Config, campaign: str | None = None) -> set[str]:
+    urls = {d.url for a in config.sequence.attachment_sets.values()
+            for d in a.documents if d.url}
+    for step in config.steps_for(campaign):
+        urls.update(step.links.values())
+    return urls
+
+
 def gate(conn: sqlite3.Connection, config: Config, campaign: str | None = None) -> list[str]:
-    """Blockers arising from links: never checked, changed since, or failing."""
+    """Blockers arising from links: never checked, changed since, or failing.
+
+    Only links the config still names are considered. A URL that was removed
+    leaves its last check behind, carrying the fingerprint of the set it
+    belonged to; reading those rows made a *removed* link block the gate
+    permanently, because no later check would ever update a row for a URL that
+    is no longer looked up.
+    """
     fp = links_fingerprint(config, campaign)
-    rows = conn.execute(
+    live = current_urls(config, campaign)
+    rows = [r for r in conn.execute(
         "SELECT name, url, status, detail, fingerprint FROM link_checks"
         " WHERE id IN (SELECT MAX(id) FROM link_checks GROUP BY url)").fetchall()
+        if r["url"] in live]
     if not rows:
         return ["linked documents have never been checked. Run: outbound check-links"]
     stale = [r for r in rows if r["fingerprint"] != fp]
-    if stale or len(rows) < len(set(
-            [d.url for a in config.sequence.attachment_sets.values() for d in a.documents if d.url])):
+    if stale or len(rows) < len(live):
         return ["linked documents changed since they were last checked. "
                 "Run: outbound check-links"]
     return [f"{r['name']} link is not publicly reachable ({r['status']}): {r['detail']}"

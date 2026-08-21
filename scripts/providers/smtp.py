@@ -118,7 +118,13 @@ class SMTPMailbox(MailboxProvider):
         # ID we never saw is an ID we can never match against.
         msg["Message-ID"] = make_msgid(domain=addr.partition("@")[2] or None)
         msg["X-Outbound-Step"] = email_obj.step_id
+        # set_content then add_alternative gives multipart/alternative with the
+        # text part first, which is the order every client expects: the last
+        # part wins in renderers that understand HTML, and the first is what a
+        # text-only client shows.
         msg.set_content(email_obj.body)
+        if email_obj.is_html:
+            msg.add_alternative(email_obj.body_html, subtype="html")
 
         import mimetypes
 

@@ -82,6 +82,11 @@ def test_risk_flags_name_what_could_be_wrong(conn):
     from scripts.review import risk_flags
 
     class R(dict):
+        # A row with no title now reads as title-unknown, which is its own flag.
+        # These cases are about address quality, so give them a known title.
+        def __init__(self, **kw):
+            super().__init__({"title": "Research Scientist", **kw})
+
         def __getitem__(self, k): return self.get(k)
 
     single = R(email_basis="inferred_from_pattern", email_pattern_samples=1,

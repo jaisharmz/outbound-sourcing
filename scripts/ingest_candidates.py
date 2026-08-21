@@ -80,8 +80,14 @@ def passes_icp(candidate: Candidate, config: Config) -> str | None:
     icp = config.icp
     title = candidate.title.lower()
 
-    if icp.titles and not any(t.lower() in title for t in icp.titles):
-        return f"title {candidate.title!r} matches no icp.titles entry"
+    # An honestly-unknown title is not an off-ICP title. The investigation loop
+    # chases a role through the roster, the team page and the person's own page;
+    # when all three come back empty the record says so rather than inventing
+    # one. Dropping those here would discard exactly the people the loop worked
+    # hardest for, so they pass and are flagged at review for a per-row call.
+    if title.strip().lower() not in ("unknown", "unknown title", ""):
+        if icp.titles and not any(t.lower() in title for t in icp.titles):
+            return f"title {candidate.title!r} matches no icp.titles entry"
     if any(x.lower() in title for x in icp.title_excludes):
         return f"title {candidate.title!r} matches an icp.title_excludes entry"
     if candidate.confidence < icp.min_confidence:

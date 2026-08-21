@@ -27,7 +27,8 @@ from .errors import ConfigError
 from .review_select import choose
 
 COLUMNS = [
-    "contact_id", "approved", "name", "title", "seniority", "company", "email",
+    "contact_id", "approved", "name", "title", "title_status", "seniority",
+    "company", "email",
     "email_basis", "pattern", "pattern_samples", "pattern_confidence",
     "address_age", "verification", "confidence", "liveness",
     "personalization", "personalization_source",
@@ -53,6 +54,10 @@ def rows(conn: sqlite3.Connection, campaign: str | None = None) -> list[sqlite3.
          WHERE {' AND '.join(where)}""", tuple(params)).fetchall()
 
 
+def _title_unknown(title: str | None) -> bool:
+    return (title or "").strip().lower() in ("unknown", "unknown title", "")
+
+
 def _order(r: sqlite3.Row) -> tuple:
     """Best-first: IC researchers before senior ICs before leadership.
 
@@ -61,8 +66,12 @@ def _order(r: sqlite3.Row) -> tuple:
     being hidden -- a company that yields only a founder still deserves a
     considered decision.
     """
-    return (seniority.rank(r["title"]), (r["company"] or "").lower(),
-            -(r["confidence"] or 0), (r["name"] or "").lower())
+    # Unknown-title rows sort together as a block, because they are read as a
+    # group and judged by a different question than the rest: "is this person
+    # worth writing to at all", not "is this the right person".
+    return (_title_unknown(r["title"]), seniority.rank(r["title"]),
+            (r["company"] or "").lower(), -(r["confidence"] or 0),
+            (r["name"] or "").lower())
 
 
 def risk_flags(r: sqlite3.Row) -> list[str]:
@@ -71,6 +80,10 @@ def risk_flags(r: sqlite3.Row) -> list[str]:
     # Not a defect in the record -- a judgement the operator wants to make
     # deliberately rather than by default. A founder or exec is the profile
     # least likely to reply, so approving one should be a decision.
+    if _title_unknown(r["title"]):
+        out.append("title UNKNOWN after the investigation loop tried the roster, the "
+                   "company team page and the person's own page. Not inferred from "
+                   "their activity -- decide from the evidence below")
     if seniority.is_leadership(r["title"]):
         out.append(f"{r['title']}: {seniority.explain(r['title'])}. "
                    f"Approve only if this company yields nobody more hands-on")
@@ -137,8 +150,9 @@ def export(conn, config, out_path: Path, campaign: str | None = None) -> tuple[i
         w.writerow(COLUMNS)
         for r in data:
             w.writerow([
-                r["id"], "", r["name"], r["title"], seniority.name(r["title"]),
-                r["company"], r["email"],
+                r["id"], "", r["name"], r["title"],
+                "unknown" if _title_unknown(r["title"]) else "known",
+                seniority.name(r["title"]), r["company"], r["email"],
                 r["email_basis"], r["email_pattern"], r["email_pattern_samples"],
                 f"{r['email_pattern_confidence']:.2f}" if r["email_pattern_confidence"] else "",
                 (r["observed_at"] or "")[:10], r["verification_status"], r["confidence"],

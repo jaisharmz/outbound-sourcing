@@ -56,7 +56,7 @@ class Attachment:
 @dataclass
 class RenderedEmail:
     subject: str
-    body: str
+    body: str                    # the plain-text alternative
     to: str
     cc: list[str] = field(default_factory=list)
     bcc: list[str] = field(default_factory=list)
@@ -66,6 +66,11 @@ class RenderedEmail:
     template_hash: str = ""
     step_id: str = ""
     campaign: str | None = None
+    body_html: str = ""          # empty when the template is plain text
+
+    @property
+    def is_html(self) -> bool:
+        return bool(self.body_html.strip())
 
     @property
     def recipient_count(self) -> int:
@@ -230,10 +235,61 @@ def build_context(
             "link_lines": persona.link_lines,
             "project_bullets": persona.project_bullets,
             "signature": persona.signature,
+            # The structured list, so an HTML template can mark each project up
+            # itself instead of receiving a pre-joined plain-text block.
+            "projects": [{"org": x.org, "blurb": x.blurb} for x in persona.projects],
         },
         "campaign": {"name": campaign_name or campaign.name},
         "document_links": [{"name": n, "url": u} for n, u in links],
     }
+
+
+_TAG = re.compile(r"<[^>]+>")
+_ANCHOR = re.compile(r'<a\b[^>]*>(.*?)</a>', re.I | re.S)
+# Swallow the newline the template itself puts after <br>, or every
+# single line break becomes a blank line in the text part.
+_BR = re.compile(r"<br\s*/?>[ \t]*\n?", re.I)
+_BLOCK_END = re.compile(r"</(p|div|ul|ol|li|h[1-6])>", re.I)
+HTML_START = re.compile(r"^\s*<(p|div|table|html|h[1-6])\b", re.I)
+
+
+def looks_like_html(body: str) -> bool:
+    return bool(HTML_START.match(body))
+
+
+def html_to_text(html: str) -> str:
+    """The plain-text alternative, for clients that will not render HTML.
+
+    It has to degrade cleanly, which means it must not look like a failed
+    attempt at formatting. Two rules follow:
+
+      Bold becomes nothing. `<strong>x</strong>` renders as `x`, never `**x**`.
+      Asterisks in a text/plain part are the visible residue of markdown that
+      did not run, and they read as a broken mail merge.
+
+      A link becomes its anchor text alone: `Google Scholar profile`, not the
+      URL and not `text (url)`. A bare URL in running prose is the other half of
+      the same tell. The cost is real and worth stating plainly: a text-only
+      reader cannot follow the link, and reaches the signature knowing a profile
+      exists with no way to open it.
+    """
+    text = _ANCHOR.sub(lambda m: _TAG.sub("", m.group(1)), html)
+    text = _BR.sub("\n", text)
+    text = _BLOCK_END.sub("\n\n", text)
+    text = _TAG.sub("", text)
+    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
+                         ("&gt;", ">"), ("&#39;", "'"), ("&quot;", '"')):
+        text = text.replace(entity, char)
+    out, blanks = [], 0
+    for line in text.splitlines():
+        if line.strip():
+            out.append(line.strip())
+            blanks = 0
+        else:
+            blanks += 1
+            if blanks == 1 and out:
+                out.append("")
+    return "\n".join(out).strip() + "\n"
 
 
 def render(
@@ -273,9 +329,29 @@ def render(
     except TemplateError as exc:
         raise ConfigError(f"{step.template}: render failed -- {exc}") from exc
 
+    # An HTML template carries its own plain-text alternative, derived rather
+    # than written twice -- two hand-maintained bodies drift, and the one nobody
+    # looks at is the one that ships broken.
+    # A document that resolve_documents decided to link, in a template with no
+    # place to put it, would vanish silently. That is how the portfolio would
+    # stop being sent without anything reporting it.
+    if links and "document_links" not in body_tpl:
+        raise ConfigError(
+            f"{step.template} renders no document_links block, but "
+            f"{len(links)} document(s) resolved to links rather than attachments: "
+            f"{', '.join(n for n, _ in links)}. They would be dropped silently. "
+            f"Either add a document_links block to the template, or remove the "
+            f"document from the attachment set so the omission is deliberate."
+        )
+
+    html = body if looks_like_html(body) else ""
+    if html:
+        body = html_to_text(html)
+
     return RenderedEmail(
         subject=subject,
         body=body,
+        body_html=html,
         to=to,
         cc=list(cc or []),
         bcc=list(bcc or []),
