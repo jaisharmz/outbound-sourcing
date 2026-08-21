@@ -504,6 +504,38 @@ def cc_resolve(
     typer.echo(f"extra recipients counted against the daily cap: {r.recipient_count}")
 
 
+@app.command("exclusions")
+def exclusions_cmd(
+    refresh: bool = typer.Option(True, "--refresh/--no-refresh"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Show who is excluded as personally known, and the evidence for each hop."""
+    from . import exclusions as EX
+
+    cfg = _config(config)
+    conn = open_db(db)
+    if refresh:
+        with transaction(conn):
+            EX.refresh(conn, cfg)
+    rows = list(conn.execute(
+        "SELECT * FROM exclusions_applied ORDER BY hops, through, name"))
+    if not rows:
+        typer.echo("nothing excluded. Named seeds match no node in the graph yet.")
+        typer.echo("Seeds are matched against graph_nodes, so they take effect once "
+                   "traversal has seen them.")
+        return
+    seeds = [r for r in rows if r["hops"] == 0]
+    hop1 = [r for r in rows if r["hops"] == 1]
+    typer.secho(f"\n{len(seeds)} named directly:", fg=typer.colors.CYAN)
+    for r in seeds:
+        typer.echo(f"  {r['name']}\n      {r['reason'][:110]}")
+    typer.secho(f"\n{len(hop1)} excluded one hop out:", fg=typer.colors.CYAN)
+    for r in hop1:
+        typer.echo(f"  {r['name']}\n      {r['reason']}\n      {r['source_url'] or '(no url)'}")
+    typer.echo(f"\ntotal excluded: {len(rows)}")
+
+
 # ------------------------------------------------------------------ suppress
 
 

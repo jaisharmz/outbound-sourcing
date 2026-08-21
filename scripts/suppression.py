@@ -143,13 +143,20 @@ def load_set(conn: sqlite3.Connection) -> set[str]:
     return {r["value"] for r in conn.execute("SELECT value FROM suppression")}
 
 
-def is_suppressed(conn: sqlite3.Connection, email: str, company: str | None = None) -> str | None:
-    """Return the reason an address is suppressed, or None."""
+def is_suppressed(conn: sqlite3.Connection, email: str, company: str | None = None,
+                  lab: str | None = None) -> str | None:
+    """Return the reason an address is suppressed, or None.
+
+    Lab is checked alongside company because suppress_lab writing rows nobody
+    reads would make lab suppression look implemented while sending anyway.
+    """
     email = email.strip().lower()
     domain = email.partition("@")[2]
     checks = [("email", email), ("domain", domain)]
     if company:
         checks.append(("company", normalize_company(company)))
+    if lab:
+        checks.append(("lab", lab.strip().lower()))
     for kind, value in checks:
         row = conn.execute(
             "SELECT reason FROM suppression WHERE kind = ? AND value = ?", (kind, value)

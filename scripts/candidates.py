@@ -86,6 +86,10 @@ class Candidate(BaseModel):
     # Optional. Used by the ICP filter for region rules.
     country: str | None = None
     linkedin_url: str | None = None
+    # The research group, where the person belongs to one. Traversal surfaces a
+    # lab's members together, so this is what the per-lab cap and lab-level
+    # suppression key on -- without it both silently no-op.
+    lab: str | None = None
 
     @field_validator("email")
     @classmethod

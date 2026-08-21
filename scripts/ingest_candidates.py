@@ -28,7 +28,8 @@ from .normalize import (
     normalize_person,
     registrable_domain,
 )
-from .suppression import is_suppressed, load_set
+from . import exclusions
+from .suppression import is_suppressed, lab_is_full, load_set
 
 
 @dataclass
@@ -42,6 +43,8 @@ class IngestReport:
     dropped_duplicate: list[str] = field(default_factory=list)
     dropped_icp: list[str] = field(default_factory=list)
     dropped_free_mail: list[str] = field(default_factory=list)
+    dropped_excluded: list[str] = field(default_factory=list)
+    dropped_lab_full: list[str] = field(default_factory=list)
     degraded_companies: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -56,6 +59,8 @@ class IngestReport:
             ("duplicate", self.dropped_duplicate),
             ("off-ICP", self.dropped_icp),
             ("free-mail", self.dropped_free_mail),
+            ("personally excluded", self.dropped_excluded),
+            ("lab already at cap", self.dropped_lab_full),
         ):
             if items:
                 lines.append(f"dropped {label}: {len(items)} -- {', '.join(items[:5])}"
@@ -148,11 +153,11 @@ def upsert_contact(
     cur = conn.execute(
         "INSERT INTO contacts (account_id, name, first_name, last_name, title, email,"
         " email_domain, email_basis, confidence, personalization, personalization_source_url,"
-        " country, linkedin_url, candidate_file, tier, campaign, ai_depth,"
-        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " country, linkedin_url, lab, candidate_file, tier, campaign, ai_depth,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (account_id, c.name, c.first_name, c.last_name, c.title, email, domain_of(email),
          c.email_basis, c.confidence, c.personalization, c.personalization_source_url,
-         c.country, c.linkedin_url, source_file,
+         c.country, c.linkedin_url, c.lab, source_file,
          acct["tier"], acct["campaign"], acct["ai_depth"], utcnow(), utcnow()),
     )
     cid = int(cur.lastrowid)
@@ -222,8 +227,15 @@ def _ingest_company(
     for c in cf.candidates:
         email = normalize_email(c.email)
 
-        if reason := is_suppressed(conn, email, c.company):
+        lab = getattr(c, "lab", None)
+        if reason := is_suppressed(conn, email, c.company, lab=lab):
             report.dropped_suppressed.append(f"{email} ({reason})")
+            continue
+        # Checked here rather than at send: someone the operator already knows
+        # should never reach the review queue, because the reviewer's job is
+        # judging the pitch, not remembering every colleague.
+        if ex := exclusions.check(conn, config, c.name, lab=lab, company=c.company):
+            report.dropped_excluded.append(f"{c.name} <{email}> ({ex['reason']})")
             continue
         if is_free_mail(domain_of(email)):
             report.dropped_free_mail.append(email)
@@ -234,6 +246,12 @@ def _ingest_company(
             report.dropped_duplicate.append(
                 f"{email} (same person as {seen_people[person_key]})"
             )
+            continue
+        # Four people from one lab are colleagues who talk to each other, and
+        # traversal surfaces them together. The cap keeps a single group from
+        # receiving what reads as a campaign against it.
+        if lab and lab_is_full(conn, lab, config.icp.max_contacts_per_lab):
+            report.dropped_lab_full.append(f"{c.name} ({lab})")
             continue
         if reason := passes_icp(c, config):
             report.dropped_icp.append(f"{email} ({reason})")
