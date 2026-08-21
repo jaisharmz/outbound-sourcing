@@ -1,370 +1,151 @@
 ---
 name: outbound-sourcing
-description: Source prospective clients and run cold outbound end to end — find companies, research named people and ground their emails in evidence, verify addresses, review before anything sends, then send by hand from a single mailbox and watch for replies. Use when the user says "find me clients", "run outbound", "source companies", "who should I email at X", "check replies", "how did the campaign do", or asks to add someone to the suppression list. Discovery is agentic and uses WebSearch/WebFetch/subagents; everything from ingestion onward is scripts with no model in the loop.
-argument-hint: <discover|research|verify|review|send|replies|report> [--campaign <name>] [--dry-run]
+description: Find named people at a company, ground every claim about them in a source you can open, and leave a personalized email as a draft in the operator's Gmail for them to read and send by hand. Use when the user says "find me clients", "run outbound", "source companies", "who should I email at X", asks to draft outreach to a company or field, or asks to add someone to the suppression list. Discovery is agentic and uses WebSearch/WebFetch; everything from ingestion onward is scripts with no model in the loop.
+argument-hint: <company | person | --industry "topic">
 user-invocable: true
 ---
 
 # Outbound sourcing
 
-Two layers, and the boundary between them is the whole design.
+Finds people worth emailing, proves who they are, and leaves drafts in Gmail.
+**It never sends.** The operator opens the inbox and sends each one by hand.
+
+## Two layers
 
 **Agentic — you, at runtime.** Reading a lab's site and noticing that "Members of
-Technical Staff" lives at a different URL than "Team". Following a personal page to a CV
-PDF. Inferring that a company uses `first@` from one arXiv footnote. Deciding who at a
-company is worth contacting. Writing the personalization line. This is research, and it
-is your job, not a scraper's.
+Technical Staff" lives at a different URL than "Team". Following a personal page to
+a CV. Deciding who at a company is worth contacting. Writing the personalization
+line. This is research, and it is your job, not a scraper's.
 
-**Deterministic — scripts, no model.** Domain resolution, dedupe, ICP filtering, MX/SMTP
-verification, template rendering, CC resolution, pacing, jitter, caps, blackouts, the
-send itself, retries, state transitions, suppression, and bounce tracking.
+**Deterministic — scripts, no model.** Dedupe, ICP filtering, suppression,
+verification, rendering, size gates, drafting, state transitions.
 
-The send path contains zero model calls. `tests/test_send_path_purity.py` enforces that
-by walking the import graph — it is checked, not promised.
+The send path contains zero model calls. `tests/test_send_path_purity.py` walks the
+import graph and fails if it ever could — checked, not promised.
 
-## Start here: `/outbound`
+## Start here: `outbound investigate`
 
-`/outbound <company | person | --industry "<topic>">` runs the whole investigation
-from nothing and stops at the review gate. It is the primary entry point, and the
-sections below are the mechanism it drives rather than a separate procedure. The
-command lives in `.claude/commands/outbound.md`; read it for the current step
-order, and prefer it to assembling the steps by hand.
+    outbound investigate "<company>" --domain <domain>
 
-Measured cost, 2026-08-21, both from an empty database: Together AI took 5.2 min
-(2 searches, 247 fetches, 1 API call) and produced 39 entry points and 7
-addresses. Baseten took 1.5 min and correctly produced nothing.
+Discovery is an **investigation loop**, not a sequence of channels. Every channel
+here fails on some population: personal pages fail on hardware engineers, paper
+first pages fail on companies that do not publish, GitHub patterns fail without a
+public org, rosters fail where no org exists. Running them in a fixed order and
+reporting what each missed produces an accurate list of gaps and very few contacts.
 
-### Discovery is an investigation loop, not a channel sequence
-
-`outbound investigate <company> --domain <d>` is how people are found. Every
-channel in this skill fails on some population -- personal pages fail on hardware
-engineers, paper first pages fail on companies that do not publish, GitHub
-patterns fail without a public org, rosters fail where no org exists. Running
-them in a fixed order and reporting what each one missed produces an accurate
-list of gaps and very few contacts.
-
-**The loop asks one question at each step: what is the next investigation that
-gets me closer to a grounded contact?** A partial result is a lead, not a dead
-end:
+The loop asks one question per step: **what is the next investigation that gets me
+closer to a grounded contact?** A partial result is a lead, not a dead end.
 
 | what you have | what it is a lead to |
 | --- | --- |
 | a personal page with no address | its Scholar link, or the person's papers |
-| a Scholar profile | the papers it lists, and a verified email *domain* |
-| a paper carrying company addresses | the addresses, **and every coauthor**, who are usually colleagues |
-| a name and no address | the domain's convention, learned from GitHub commits |
-| an address and no role | the roster, the company team page, the person's own page |
+| a Scholar profile | the papers it lists |
+| a paper carrying company addresses | the addresses, **and every coauthor** |
+| a name and no address | the domain's convention, learned from commits |
+| an address and no role | the roster, the team page, their own page |
 
-One entry point becomes a team, and each record is grounded in a dated primary
-document naming both the person and the employer. That is not weaker than a
-roster intersection -- it is stronger, because a paper is evidence about a moment
-while a membership list is evidence about now with no history.
+One entry point becomes a team, and each record rests on a dated primary document
+naming both the person and the employer.
 
-**Stopping rule.** Budget (`--budget`, default 60 steps) or `--max-dry`
-consecutive steps yielding neither a fact nor a lead. Both are needed: budget
-alone lets one rich seed spend everything on a single company, and dryness alone
-never terminates on a coauthor graph that keeps offering new names.
+**Stopping:** `--budget` steps, or `--max-dry` consecutive steps yielding neither a
+fact nor a lead. Both are needed — budget alone lets one rich seed spend everything
+on a single company; dryness alone never terminates on a coauthor graph.
 
-**Every step is logged** to `state/investigations/<run>_<company>.md` -- what was
-tried, what it gave, what it suggested next. The reasoning is the reviewable
-part; a contact whose derivation cannot be read is a contact that cannot be
-checked.
+Every step is logged to `state/investigations/`. The reasoning is the reviewable
+part: a contact whose derivation cannot be read is a contact that cannot be checked.
 
-**Titles are chased, never inferred.** A title is a claim about someone's role;
-commit history is evidence about their activity, and turning the second into the
-first is the confident-wrong-answer failure this system keeps having to catch. If
-a title survives the loop unfound it stays `UNKNOWN` and is flagged at review for
-a per-row decision.
+## Which channel suits which population
 
-Measured on the two companies where the older channels failed worst (2026-08-21).
-OpenAlex reported 1 person at Baseten and 3 at Fireworks AI; the personal-page
-channel found 1 address and 0.
+This determines whether the tool works at all for a given target. Measured
+2026-08-21.
 
-| | steps | people grounded (address + affiliation) |
-| --- | --- | --- |
-| Baseten | 36 | **10** |
-| Fireworks AI | 40 | **13** |
+| population | example | personal pages | what works |
+| --- | --- | --- | --- |
+| publishing ML researchers | Together AI | 13 of 42 | personal pages, OpenAlex |
+| systems and hardware | Groq | 2 of 72, both unusable | paper first pages, commit patterns |
+| non-publishing product companies | Baseten, Fireworks | ~1% | GitHub org + commit patterns |
+| open-source projects | LangChain, vLLM | nothing | **nothing — contributors commit from personal addresses, so there is no domain convention to learn** |
 
-**Paid enrichment** (RocketReach, Apollo) is an unimplemented seam in
-`scripts/enrichment.py`. Adding a key changes the evidence story -- such records
-carry `email_basis: purchased`, which is neither observed nor inferred -- so the
-loop reaches for it only after free channels are exhausted for that person.
+Pointing this at four open-source projects and getting zero is the tool working
+correctly, not a failure. Say so rather than padding the run.
 
-### Status of the older paths
+## The evidence contract
 
-They still work and are still reachable; they are no longer the default route,
-and two are narrower than this document originally described.
-
-| path | status |
-| --- | --- |
-| `outbound investigate` | **current.** How people are found. |
-| `/outbound` on one company | **current.** Wraps the loop with review and send. |
-| `outbound discover --mode vc` (fund rosters) | **superseded as the entry point.** Still the way to load a bulk list, but sourcing no longer starts from a fund portfolio. |
-| `outbound discover --mode industry` | **occasional.** Costs 20–60 min and most of a session's search budget. |
-| per-company research subagents (§2) | **superseded** by `/outbound`, which does the same work in one invocation and reports its cost. |
-| GitHub commit-email harvesting | **narrowed to domain-pattern learning only.** A commit address is an address without an identity. Do not source people from it. |
-| volume infrastructure (mailbox pool, warmup, daemon, per-recipient windows, links-vs-attachments A/B, bounce circuit breaker) | **removed.** Deleted, not dormant. The target is 15–25/day from one mailbox, sent by hand. |
-| CAN-SPAM footer and mailing address | **removed by decision.** See `references/compliance.md`. |
-
-## The contract
-
-Agentic discovery writes **only** to `state/candidates/<company>.json`.
+Agentic discovery writes **only** `state/candidates/<company>.json`.
 `scripts/ingest_candidates.py` validates and loads it. Everything downstream reads
 SQLite and never reads you.
 
 Every record carries evidence with URLs. The validator rejects any record where the
 name/title/company binding or the email lacks a URL, and any record whose
-`personalization` has no `personalization_source_url`. At 500 sends/day a hallucinated
-contact is not a bug anyone notices in time — it is a bounce, and enough of them cost
-the sending domain permanently.
+`personalization` has no `personalization_source_url`.
 
-**If you cannot find grounding, emit `personalization: null` and let the template fall
-back.** That is always the correct move over inventing a detail about someone's work.
+**An address is either observed or inferred, and they are different claims.**
+Observed means seen on a page, in a paper, or in a commit. Inferred means a domain
+convention predicts it — applied only above 90% confidence and 5 samples, marked
+`inferred_from_pattern`, and flagged at review as NOT OBSERVED, because that is the
+one that bounces.
 
-See `references/schema.md` for the full schema and `references/discovery.md` for the
-research brief and the evidence standard.
+**If you cannot find grounding, emit `personalization: null`** and let the template
+fall back. Always correct over inventing a detail about someone's work.
 
-## Setup
+**A title is never inferred from activity.** Commit history is evidence about what
+someone does, not a claim about their role. An unfound title stays `Unknown` and is
+flagged for a per-row decision.
 
-First run, or a new machine: read `GETTING-STARTED.md`. Short version:
+## Gates between a record and a send
 
-```bash
-cd ~/.claude/skills/outbound-sourcing
-uv venv --python 3.13 && uv pip install -e ".[dev]"
-cp -r config.example config          # then edit config/
-python -m scripts.outbound validate-config
-python -m scripts.outbound db migrate
-```
+Each exists because something failed silently once.
 
-`config/` is gitignored and holds everything user-specific. Nothing about a particular
-user belongs in `SKILL.md`, `scripts/`, or `references/`.
+| gate | what it stops |
+| --- | --- |
+| evidence validator | a claim with no source you can open |
+| suppression | anyone who asked to stop, permanently, plus bounces |
+| personal exclusions | people the operator already knows, one hop over the graph |
+| leadership filter | founders and execs, scanned from the company's own pages |
+| review gate | everything, until a human approves it |
+| link checker | a linked document behind a login or request-access wall |
+| size gates | an attachment set that hard-bounces on corporate gateways |
+| template hash | copy edited after the last test send |
+| delivered-From check | Gmail rewriting the sender in transit |
+| DB guard | anything but the CLI opening the production database |
 
 ## Commands
 
-Every script runs as `python -m scripts.<name>`; this file orchestrates rather than
-reimplements. Run them from the skill directory with the venv active.
-
-| Command | What it does |
-|---|---|
-| `outbound validate-config` | Load and cross-check every config file. Run after any edit. |
-| `outbound db migrate` \| `db stats` | Schema, row counts. |
-| `outbound ingest [--dry-run]` | Validate candidate JSON into SQLite. |
-| `outbound render --step <id> [--email <addr>]` | Render one email exactly as it would send. |
-| `outbound cc-resolve --domain --campaign --step` | Show which CC rule wins and why. |
-| `outbound suppress <email>` | Honor an opt-out. Permanent, global; kind inferred. |
-| `outbound demo` | End-to-end on fixtures through the console mailbox. No network, scratch DB. |
-| `outbound harvest-github --prefilter pass_builds` | Read addresses off public commits, infer each domain's email pattern. Needs `GITHUB_TOKEN`. |
-| `outbound auth --mailbox <id>` | OAuth for one mailbox. Names the exact failure mode. |
-| `outbound test-email --mailbox <id> --step <id>` \| `--all-mailboxes` \| `--to <addr>` | Real email to `test_recipient`, then prints outgoing **and delivered** headers with SPF/DKIM/DMARC verdicts. |
-
-`--to` is the only path in the system that reaches an address which never passed the
-review gate, so it is gated: the address must be `test_recipient` or match
-`campaign.yaml: test_send_allowlist` (exact addresses or `*@domain`, subdomains included),
-otherwise `--force` is required and prints a loud warning. **Suppression is checked
-regardless and `--force` does not override it** — an opt-out is permanent and global, and
-"it was only a test" is not an exception the recipient agreed to. Every outcome, including
-every refusal, is recorded in `test_sends` with `allowlisted` and `forced` flags.
-
-Milestones 4 onward add: `discover`, `verify`, `review`, `send_queue`, `watch_replies`,
-`report`. This table grows with them.
-
-**Two gates block a campaign and are not to be worked around.** `validate-config` exits
-non-zero while any campaign blocker is unresolved — a placeholder mailing address is one,
-since CAN-SPAM requires a real one and the footer ships on every template. And attachment size is
-capped twice, in wire bytes: `max_attachment_bytes` hard-fails at config load, while
-`campaign_max_attachment_bytes` gates a campaign start separately — so a ceiling loosened
-to let a heavy set out on a test send cannot leak into real sending. An oversized set
-bounces for reasons unrelated to address quality, which is true at twenty sends a day
-exactly as it is at five hundred.
-
-## Running discovery
-
-### 1. Companies
-
-```bash
-outbound discover --mode list     --file companies.txt --tier startup
-outbound discover --mode vc       --file portfolio.txt --tier startup
-outbound discover --mode industry --run  ./industry-research/<topic>/
-outbound accounts --needs-domain          # what is blocking people discovery
-```
-
-All three land in `accounts`. The industry adapter reads `landscape.md`'s fenced YAML
-block, not the prose and not the avenue frontmatter — see `references/schema.md` for the
-shape and for the three ways it drifts.
-
-**A landscape `url` is evidence, not a homepage.** Google DeepMind's is an arXiv abstract.
-Never take a sending domain from one without checking it against the aggregator lists;
-derived domains are stored as candidates and still need resolution.
-
-An `industry-research` run costs 20–60 minutes and most of a session's search budget, so
-it is an occasional source. Companies persist in SQLite; the daily loop reads from there.
-
-### Campaigns
-
-Accounts enroll into a campaign by tier, per `config/campaigns.yaml`. Two segments that
-fail for different reasons do not share copy: a small company ignores you because nobody
-read it, a large lab ignores you because the named researcher has no mechanism to engage
-an outside group without a formal partnership process. A blended reply rate hides which
-one is working, so tier and campaign are carried to the contact record and reporting
-breaks them out separately.
-
-Campaign templates live in `templates/<campaign>/` and fall back per file to `templates/`,
-so a campaign only overrides the copy it actually changes. **A template still containing a
-bracketed placeholder blocks its campaign** — an unwritten email must not be sendable.
-
-### 2. People — the agentic loop
-> **Superseded by `/outbound`.** This section describes the older per-company
-> subagent fan-out. The judgment it describes is still correct and worth reading;
-> the orchestration is not how a run is started now. `/outbound` performs these
-> steps in one invocation against `outbound company-resolve`,
-> `outbound traverse-company` and `outbound person-pages`, and reports what it
-> cost. Use the subagent loop only for a bulk sweep across many companies.
-
-For each company, spawn a subagent with a research brief and a tool budget (default 15,
-from `campaign.yaml`). Run companies in parallel batches. **The brief is generated from
-`config/icp.yaml` + `config/dorks.yaml` + the company record — never hardcoded.** Build
-it per `references/discovery.md`.
-
-The subagent's job: find people matching the ICP, find or infer their emails, ground
-every claim, write the JSON, stop. Tell it the ICP, the evidence requirements, the
-budget, and what to do when it finds nothing — emit an empty file with a `reason`, never
-pad.
-
-Sources that give you a name and a real email **in the same document**, which is what
-makes pattern inference work: arXiv PDFs (emails in the header), Semantic Scholar /
-OpenAlex, personal academic sites, and company `/team`, `/research`, `/about` pages.
-
-**GitHub commit emails are no longer a people source.** They give an address with
-no identity attached and no evidence the person still works there. GitHub is kept
-for one job only: learning a domain's email pattern, via
-`outbound harvest-github`. Never create a contact from a commit address.
-
-`config/dorks.yaml` holds search *seeds*, not a script. Improvise beyond them.
-
-**LinkedIn: SERP snippets only.** Read names and titles off search results. Never fetch,
-crawl, or automate anything on linkedin.com — it breaks their ToS and gets the user's IP
-blocked. Names found there get resolved to emails through the other channels.
-
-Cache every fetch to `state/cache/` keyed by URL hash, so re-runs are free and the user
-can see what a subagent actually read.
-
-**Report your search budget honestly.** Set `searches_used` and `budget_exhausted` in
-every candidate file. A run that exhausts WebSearch keeps fetching pages it already has
-addresses for, so verification still works and the output still looks complete while
-discovery has silently stopped. A company marked `budget_exhausted` is stored as
-`degraded`, not `done`, and re-queues. Never let a thin run read as a finished one.
-
-### 2b. What a good run looks like when it finds nothing
-
-Two of the first three pilot companies emitted an empty file, and both were correct:
-
-- **An acquisition invalidated the affiliation.** Anyscale's three portfolio-listed
-  founders are all real and findable, but the company was acquired three weeks before the
-  run and the whole team is moving. Writing contacts there would have meant asserting a
-  current affiliation we cannot support — and the fund still listed the company `Active`.
-- **Names were groundable, emails were not.** Udio's five founders are confirmed in a
-  launch announcement, but no `@udio.com` address is observable anywhere: not on the site's
-  raw HTML, not in an arXiv footnote, not in Crossref. With no observed address at the
-  domain there is nothing to infer a pattern from, and inferring one anyway is a guess
-  dressed as a record.
-
-Both are stored as `no_contacts`, not `done`, so they re-queue when something changes.
-A file whose `reason` explains itself is a successful run.
-
-### 3. Ingest
-
-```bash
-python -m scripts.outbound ingest --dry-run   # validate first
-python -m scripts.outbound ingest
-```
-
-A file that fails validation is rejected whole. Read the error, fix the research, re-emit
-the file. Do not edit the JSON to make the validator pass — the validator is the point.
-
-## The human review gate
-
-Hard stop between enrichment and queueing. Nothing queues without an approved row.
-Export CSV plus a readable markdown table with name, title, company, email, verification
-status, confidence, evidence URLs, personalization and its source URL — and **five fully
-rendered emails, CC line included**. The user edits the `approved` column and re-imports.
-
-## Sending
-
-**`outbound send` writes Gmail drafts by default. `--send` actually sends.**
-
-A message seen in the real client is a message actually reviewed, and the draft
-is created over IMAP APPEND rather than the Gmail API -- the API needs OAuth and
-this project's client is still behind Google's unverified-app wall, while the app
-password that already sends also drafts.
-
-`drafted` is a distinct state from `sent`, and the distinction is load-bearing: a
-draft does not touch the daily cap, does not move the contact to `active`, and
-does not start reply tracking or company suppression. A batch prepared and then
-abandoned must not suppress companies that were never written to. The window and
-the pacing delay are skipped too -- both govern what a receiving server sees, and
-in draft mode nothing reaches one.
-
-Gmail assigns its own Message-ID when a draft is sent from the web client, so the
-manual send cannot be detected reliably by the id we generated. Marking is
-explicit: `outbound drafts` lists what is waiting, `outbound mark-sent --all`
-records that they went, which is what starts the clock.
-
-
-Nothing about sending involves you. Sends are a foreground command the operator invokes:
-
-```bash
-outbound send --dry-run
-outbound send --limit 20
-```
-
-It paces with the configured jitter, respects the sending window and `blackout_dates.yaml`,
-stops at `campaign.yaml: daily_cap`, and exits when the queue or the limit is exhausted.
-It refuses to send from a mailbox that has never passed a test send, and refuses to start
-a campaign whose template hash differs from the one on that test send.
-
-Crash safety is unchanged: a message commits `sending` **before** the provider call and
-`sent` after, so a crash never double-sends.
-
-**Scope.** One mailbox at 15–25 sends a day. There is no pool, no warmup ramp, no daemon
-and no circuit breaker — see the removal table in `references/setup.md` for what went and
-why. The evidence contract, the review gate, the attachment gates, bounce suppression and
-crash safety all stayed, because none of them depend on volume.
-
-## Replies
-
-Any reply immediately stops the sequence for that contact **and every other contact at the
-same company**. A deterministic rules pass over headers detects bounces and writes them to
-the permanent suppression list.
-
-Classification and draft generation are gone — the operator reads their own inbox at this
-volume. What matters instead is knowing when reply *detection* fails, since a missed reply
-means emailing someone who already answered:
-
-- every inbound message that matches no tracked thread is recorded in `unmatched_inbound`
-  rather than discarded
-- `outbound replies --check` lists tracked threads with no detected reply alongside their
-  sent date, so stale ones can be eyeballed against the real inbox
-
-Matching runs over IMAP on `In-Reply-To`/`References` against the Message-ID we generate
-ourselves, which is the weaker of the two possible mechanisms and the reason both of the
-above exist.
+| | |
+| --- | --- |
+| `outbound investigate "<co>" --domain <d>` | find people, chase evidence |
+| `outbound discover --file companies.txt` | load a target list |
+| `outbound suggest "<terms>" --pick 1,3` | companies on hand matching an industry |
+| `outbound ingest --dir state/candidates` | validate and load candidate files |
+| `outbound verify` | MX, then SMTP where the network allows |
+| `outbound review export --out review.md` | the human gate |
+| `outbound review import --file review.csv` | load approvals |
+| `outbound send` | write Gmail drafts. `--send` actually sends |
+| `outbound drafts` | what is waiting |
+| `outbound mark-sent --all` | after sending by hand; starts reply tracking |
+| `outbound suppress <email>` | honor an opt-out |
+| `outbound doctor` | what is missing and how to fix it |
 
 ## Never
 
-- Build a crawler, headless browser, or SERP scraper — WebSearch, WebFetch and subagents
-  are the crawler.
-- Fetch or automate linkedin.com.
+- Build a crawler, headless browser, or SERP scraper — WebSearch and WebFetch are
+  the crawler.
+- Fetch or automate linkedin.com. SERP snippets only.
 - Put persona strings in `scripts/` or `references/`.
 - Call a model anywhere in the sending path.
-- Send to an unverified address, or one whose evidence chain is incomplete.
-- Emit a candidate record with an ungrounded claim.
-- Silently retry an ambiguous send failure.
+- Send to an address whose evidence chain is incomplete.
+- Infer a title from activity.
 - Pad a thin company with guesses to make a run look productive.
+- Conclude a page lacks data from WebFetch's markdown conversion. Curl the raw HTML
+  and grep for `data-` attributes first — an 855-company roster was once sitting in
+  one.
 
 ## References
 
-- `GETTING-STARTED.md` — install, configure, and the daily/weekly loop.
-- `references/discovery.md` — the research brief and the evidence standard.
-- `references/schema.md` — candidate schema, DB schema, the two-layer contract.
-- `references/deliverability.md` — CC accounting, attachment size, what was removed.
-- `references/setup.md` — install, the single mailbox, and the removal table.
+- `references/discovery.md` — the evidence standard, channels by population, and the
+  plausible-wrong-answers write-up: real records that were confidently wrong.
+- `references/schema.md` — candidate file schema and the database.
+- `references/deliverability.md` — attachments, links, CC accounting.
+- `references/compliance.md` — why there is no footer, and what the opt-out
+  obligation actually is.
+- `SETUP.md`, `USAGE.md` — installing and running it.

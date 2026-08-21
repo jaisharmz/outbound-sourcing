@@ -2,9 +2,12 @@
 
 ## Scope
 
-One mailbox, 15–25 sends a day, invoked by hand. The pool, the warmup ramp, the dedicated
-domains and the circuit breaker are gone — see the removal table in `setup.md`. What
-follows is what still applies at this volume.
+One mailbox, 15–25 sends a day, drafted by the tool and sent by hand from Gmail.
+
+Everything here follows from that volume. Most deliverability advice is written for
+bulk sending — mailbox pools, warmup ramps, dedicated domains, bounce circuit
+breakers — and none of it applies to a personal account sending twenty messages a
+day. What does apply is below.
 
 ## CC accounting — what is actually binding
 
@@ -105,11 +108,3 @@ Google Drive share URLs are a specific trap. The `/file/d/<id>/view?usp=sharing`
 the file in Drive chrome and asks some recipients to sign in; config validation rejects it
 outright and prints the direct-download form `uc?export=download&id=<id>` in the error.
 
-## Removed: the circuit breaker
-
-The trailing-bounce halt existed to stop a runaway campaign from burning a dedicated
-sending domain. There is no dedicated domain now, and at 20 sends a day a bad list is
-visible by eye before it is visible in a rate.
-
-Bounce detection itself stayed. It feeds the permanent suppression list, and address
-quality is independent of volume.
