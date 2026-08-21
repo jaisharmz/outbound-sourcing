@@ -1,6 +1,6 @@
 ---
 name: outbound-sourcing
-description: Source prospective clients and run cold outbound end to end — find companies, research named people and ground their emails in evidence, verify addresses, review before anything sends, then send on a schedule from a warmed mailbox pool and triage the replies. Use when the user says "find me clients", "run outbound", "source companies", "who should I email at X", "check replies", "how did the campaign do", or asks to add someone to the suppression list. Discovery is agentic and uses WebSearch/WebFetch/subagents; everything from ingestion onward is scripts with no model in the loop.
+description: Source prospective clients and run cold outbound end to end — find companies, research named people and ground their emails in evidence, verify addresses, review before anything sends, then send by hand from a single mailbox and watch for replies. Use when the user says "find me clients", "run outbound", "source companies", "who should I email at X", "check replies", "how did the campaign do", or asks to add someone to the suppression list. Discovery is agentic and uses WebSearch/WebFetch/subagents; everything from ingestion onward is scripts with no model in the loop.
 argument-hint: <discover|research|verify|review|send|replies|report> [--campaign <name>] [--dry-run]
 user-invocable: true
 ---
@@ -16,9 +16,8 @@ company is worth contacting. Writing the personalization line. This is research,
 is your job, not a scraper's.
 
 **Deterministic — scripts, no model.** Domain resolution, dedupe, ICP filtering, MX/SMTP
-verification, template rendering, CC resolution, scheduling, jitter, caps, warmup,
-blackouts, the send itself, retries, state transitions, suppression, bounce tracking,
-the circuit breaker.
+verification, template rendering, CC resolution, pacing, jitter, caps, blackouts, the
+send itself, retries, state transitions, suppression, and bounce tracking.
 
 The send path contains zero model calls. `tests/test_send_path_purity.py` enforces that
 by walking the import graph — it is checked, not promised.
@@ -90,8 +89,8 @@ since CAN-SPAM requires a real one and the footer ships on every template. And a
 capped twice, in wire bytes: `max_attachment_bytes` hard-fails at config load, while
 `campaign_max_attachment_bytes` gates a campaign start separately — so a ceiling loosened
 to let a heavy set out on a test send cannot leak into real sending. An oversized set
-bounces for reasons unrelated to address quality and can trip the circuit breaker on a
-false signal.
+bounces for reasons unrelated to address quality, which is true at twenty sends a day
+exactly as it is at five hundred.
 
 ## Running discovery
 
@@ -196,34 +195,44 @@ rendered emails, CC line included**. The user edits the `approved` column and re
 
 ## Sending
 
-Nothing about sending involves you. The scheduler:
+Nothing about sending involves you. Sends are a foreground command the operator invokes:
 
-- round-robins across enabled mailboxes, respecting per-mailbox and global caps,
-  counting **recipients including CC**, not messages
-- applies the warmup ramp from each mailbox's `warmup_start_date`
-- sends only inside the configured window, recipient-local where a timezone is known
-- never on weekends, never on a date in `blackout_dates.yaml`
-- randomizes inter-send delay and shuffles queue order
-- refuses to send from a mailbox that has never passed a test send, and refuses to start
-  a campaign whose template hash differs from the one on that test send
-- commits `sending` **before** the API call and `sent` after, so a crash never
-  double-sends; on restart it reconciles against provider state rather than retrying
+```bash
+outbound send --dry-run
+outbound send --limit 20
+```
 
-**The circuit breaker halts everything** if the trailing-200-send bounce rate exceeds the
-configured threshold, and requires a manual `--resume`. Do not work around it. A runaway
-bad-address campaign burns a sending domain permanently and that is not recoverable.
+It paces with the configured jitter, respects the sending window and `blackout_dates.yaml`,
+stops at `campaign.yaml: daily_cap`, and exits when the queue or the limit is exhausted.
+It refuses to send from a mailbox that has never passed a test send, and refuses to start
+a campaign whose template hash differs from the one on that test send.
+
+Crash safety is unchanged: a message commits `sending` **before** the provider call and
+`sent` after, so a crash never double-sends.
+
+**Scope.** One mailbox at 15–25 sends a day. There is no pool, no warmup ramp, no daemon
+and no circuit breaker — see the removal table in `references/setup.md` for what went and
+why. The evidence contract, the review gate, the attachment gates, bounce suppression and
+crash safety all stayed, because none of them depend on volume.
 
 ## Replies
 
-Any reply immediately stops the sequence for that contact **and every other contact at
-the same company**. A rules pass handles bounce headers, OOO patterns, and unsubscribe
-keywords. Genuinely ambiguous replies come to you to classify into `interested` /
-`not_interested` / `referral` / `ooo` / `unsubscribe` / `bounce`.
+Any reply immediately stops the sequence for that contact **and every other contact at the
+same company**. A deterministic rules pass over headers detects bounces and writes them to
+the permanent suppression list.
 
-For `interested`, render the follow-up with the second-stage attachments and **create a
-draft**. Never auto-send to a human who replied.
+Classification and draft generation are gone — the operator reads their own inbox at this
+volume. What matters instead is knowing when reply *detection* fails, since a missed reply
+means emailing someone who already answered:
 
-`unsubscribe` and `not_interested` write to the permanent global suppression list.
+- every inbound message that matches no tracked thread is recorded in `unmatched_inbound`
+  rather than discarded
+- `outbound replies --check` lists tracked threads with no detected reply alongside their
+  sent date, so stale ones can be eyeballed against the real inbox
+
+Matching runs over IMAP on `In-Reply-To`/`References` against the Message-ID we generate
+ourselves, which is the weaker of the two possible mechanisms and the reason both of the
+above exist.
 
 ## Never
 
@@ -232,7 +241,6 @@ draft**. Never auto-send to a human who replied.
 - Fetch or automate linkedin.com.
 - Put persona strings in `scripts/` or `references/`.
 - Call a model anywhere in the sending path.
-- Auto-send a reply to a human.
 - Send to an unverified address, or one whose evidence chain is incomplete.
 - Emit a candidate record with an ungrounded claim.
 - Silently retry an ambiguous send failure.
@@ -243,5 +251,5 @@ draft**. Never auto-send to a human who replied.
 - `GETTING-STARTED.md` — install, configure, and the daily/weekly loop.
 - `references/discovery.md` — the research brief and the evidence standard.
 - `references/schema.md` — candidate schema, DB schema, the two-layer contract.
-- `references/deliverability.md` — volume ceilings, CC accounting, warmup, the A/B.
-- `references/setup.md` — OAuth, sending domains, SPF/DKIM/DMARC, warmup calendar.
+- `references/deliverability.md` — CC accounting, attachment size, what was removed.
+- `references/setup.md` — install, the single mailbox, and the removal table.

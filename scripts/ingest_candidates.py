@@ -148,11 +148,11 @@ def upsert_contact(
     cur = conn.execute(
         "INSERT INTO contacts (account_id, name, first_name, last_name, title, email,"
         " email_domain, email_basis, confidence, personalization, personalization_source_url,"
-        " timezone, country, linkedin_url, candidate_file, tier, campaign, ai_depth,"
-        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " country, linkedin_url, candidate_file, tier, campaign, ai_depth,"
+        " created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (account_id, c.name, c.first_name, c.last_name, c.title, email, domain_of(email),
          c.email_basis, c.confidence, c.personalization, c.personalization_source_url,
-         c.timezone, c.country, c.linkedin_url, source_file,
+         c.country, c.linkedin_url, source_file,
          acct["tier"], acct["campaign"], acct["ai_depth"], utcnow(), utcnow()),
     )
     cid = int(cur.lastrowid)

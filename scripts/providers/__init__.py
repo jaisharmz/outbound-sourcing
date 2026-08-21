@@ -59,9 +59,6 @@ class MailboxProvider(abc.ABC):
     @abc.abstractmethod
     def list_replies(self, thread_ids: list[str], since: datetime | None = None) -> list[IncomingReply]: ...
 
-    @abc.abstractmethod
-    def create_draft(self, email: RenderedEmail, thread_id: str | None = None) -> SendResult: ...
-
     def verify_auth(self) -> tuple[bool, str]:
         """Cheap credential check so a daemon fails at startup, not at 2am."""
         return True, "no auth required"

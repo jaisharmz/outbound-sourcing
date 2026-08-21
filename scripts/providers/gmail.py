@@ -192,7 +192,6 @@ class GmailMailbox(MailboxProvider):
             msg["Reply-To"] = email.reply_to
         msg["Subject"] = email.subject
         # Stamped so reply/bounce rate can be broken down per arm of the A/B.
-        msg["X-Outbound-Variant"] = email.variant
         msg["X-Outbound-Step"] = email.step_id
         msg.set_content(email.body)
 
@@ -313,27 +312,6 @@ class GmailMailbox(MailboxProvider):
                 )
         return out
 
-    def create_draft(self, email: RenderedEmail, thread_id: str | None = None) -> SendResult:
-        """Interested replies get a draft. Never an auto-send to a human."""
-        _, _, _, _, HttpError = _require_google()
-        msg = self.build_mime(email)
-        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        message: dict[str, Any] = {"raw": raw}
-        if thread_id:
-            message["threadId"] = thread_id
-        try:
-            draft = (
-                self.service()
-                .users()
-                .drafts()
-                .create(userId="me", body={"message": message})
-                .execute()
-            )
-        except HttpError as exc:
-            return SendResult(ok=False, error=_explain_http_error(exc), retryable=False)
-        return SendResult(
-            ok=True, message_id=draft.get("id"), thread_id=draft.get("message", {}).get("threadId")
-        )
 
 
 def _explain_http_error(exc) -> str:

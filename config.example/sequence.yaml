@@ -4,6 +4,10 @@ steps:
     delay_business_days: 0
     jitter_business_days: 0
     attachment_set: first_touch
+    # Linked rather than attached. Independent of the attachment set: a first
+    # touch can attach two small documents and link a third that is too large.
+    links:
+      Example large document: https://example.com/doc.pdf
 
   - id: step2_bump
     template: step2_bump.md

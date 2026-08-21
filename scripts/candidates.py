@@ -83,9 +83,7 @@ class Candidate(BaseModel):
     personalization: str | None = None
     personalization_source_url: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
-    # Optional, set by discovery when known. Used by the scheduler for
-    # recipient-local sending windows and by the ICP filter for region rules.
-    timezone: str | None = None
+    # Optional. Used by the ICP filter for region rules.
     country: str | None = None
     linkedin_url: str | None = None
 

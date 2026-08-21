@@ -17,23 +17,23 @@ def test_example_config_loads(config: Config):
 
 def test_unknown_key_suggests_the_right_one(config_root):
     path = config_root / "campaign.yaml"
-    path.write_text(path.read_text().replace("daily_global_cap:", "dailyglobalcap:"))
+    path.write_text(path.read_text().replace("daily_cap:", "dailycap:"))
     with pytest.raises(ConfigError) as exc:
         Config(config_root)
     msg = str(exc.value)
-    assert "unknown key `dailyglobalcap`" in msg
-    assert "did you mean `daily_global_cap`?" in msg
+    assert "unknown key `dailycap`" in msg
+    assert "did you mean `daily_cap`?" in msg
 
 
 def test_unknown_nested_key_names_its_own_level(config_root):
     path = config_root / "campaign.yaml"
-    path.write_text(path.read_text().replace("  start_per_day: 10", "  start_perday: 10"))
+    path.write_text(path.read_text().replace("  min_seconds: 90", "  min_second: 90"))
     with pytest.raises(ConfigError) as exc:
         Config(config_root)
     msg = str(exc.value)
-    assert "unknown key `start_perday`" in msg
-    assert "warmup" in msg
-    assert "did you mean `start_per_day`?" in msg
+    assert "unknown key `min_second`" in msg
+    assert "inter_send_delay" in msg
+    assert "did you mean `min_seconds`?" in msg
 
 
 def test_missing_template_is_caught_before_any_send(config_root):
@@ -59,14 +59,6 @@ def test_undefined_attachment_set_is_rejected(config_root):
         Config(config_root)
 
 
-def test_links_variant_requires_a_base_url(config_root):
-    path = config_root / "campaign.yaml"
-    path.write_text(path.read_text().replace("step1_variant: attachments",
-                                             "step1_variant: links"))
-    with pytest.raises(ConfigError, match="links_base_url"):
-        Config(config_root)
-
-
 def test_sending_window_must_be_ordered(config_root):
     path = config_root / "campaign.yaml"
     path.write_text(path.read_text().replace('start: "08:00"', 'start: "17:00"'))
@@ -83,16 +75,16 @@ def test_unknown_day_is_rejected(config_root):
 
 def test_duplicate_mailbox_id_is_rejected(config_root):
     path = config_root / "mailboxes.yaml"
-    path.write_text(path.read_text().replace("id: outreach-01", "id: console"))
+    path.write_text(path.read_text().replace("id: primary", "id: console"))
     with pytest.raises(ConfigError, match="duplicate mailbox id"):
         Config(config_root)
 
 
 def test_mailbox_from_and_reply_to_are_separate(config: Config):
-    mb = config.mailboxes.get("outreach-01")
-    assert mb.from_.address == "you@sending-domain.com"
+    mb = config.mailboxes.get("primary")
+    assert mb.from_.address == "you@example.com"
     assert mb.reply_to == "you@your-institution.edu"
-    assert mb.from_.header() == "Your Name <you@sending-domain.com>"
+    assert mb.from_.header() == "Your Name <you@example.com>"
 
 
 def test_oversized_attachment_set_hard_fails_with_a_breakdown(config_root):
@@ -158,7 +150,7 @@ def test_clean_config_has_no_blockers(config: Config):
 def test_enabled_mailbox_with_a_placeholder_from_blocks(config_root):
     path = config_root / "mailboxes.yaml"
     text = path.read_text().replace(
-        "      address: you@sending-domain.com", "      address: jai@SENDING-DOMAIN-TBD.com"
+        "      address: you@example.com", "      address: jai@SENDING-DOMAIN-TBD.com"
     ).replace("    enabled: false", "    enabled: true")
     path.write_text(text)
     blockers = Config(config_root).preflight("campaign")
@@ -166,10 +158,19 @@ def test_enabled_mailbox_with_a_placeholder_from_blocks(config_root):
 
 
 def test_disabled_mailbox_placeholder_does_not_block(config_root):
+    """The console mailbox is disabled, so a placeholder in it is inert."""
     path = config_root / "mailboxes.yaml"
-    path.write_text(path.read_text().replace(
-        "      address: you@sending-domain.com", "      address: jai@SENDING-DOMAIN-TBD.com"))
-    assert Config(config_root).preflight("campaign") == []
+    text = path.read_text().replace("""  - id: console
+    provider: console
+    from:
+      name: Your Name
+      address: you@example.com""", """  - id: console
+    provider: console
+    from:
+      name: Your Name
+      address: jai@SENDING-DOMAIN-TBD.com""")
+    path.write_text(text)
+    assert not any("placeholder" in b for b in Config(config_root).preflight("campaign"))
 
 
 def _oversize(config_root, mb: int = 8) -> None:
@@ -322,3 +323,29 @@ def test_campaigns_route_on_depth_as_well_as_tier(config_root):
     assert cfg.campaigns.for_depth("applies") == "applied-ai"
     assert cfg.campaigns.for_depth(None) is None
     assert cfg.campaigns.depth_routes() == {"builds": "startup", "applies": "applied-ai"}
+
+
+def test_a_placeholder_link_blocks_its_campaign(two_campaigns):
+    """A linked document with no URL is an unwritten email by another route."""
+    two_campaigns.sequence.steps[0].links = {"Portfolio": "[DRIVE URL NEEDED]"}
+    blockers = two_campaigns.preflight("campaign")
+    assert any("DRIVE URL NEEDED" in b and "Portfolio" in b for b in blockers)
+
+
+def test_a_real_link_does_not_block(two_campaigns):
+    two_campaigns.sequence.steps[0].links = {"Portfolio": "https://drive.example.test/abc"}
+    assert not any("Portfolio" in b for b in two_campaigns.preflight("campaign"))
+
+
+def test_verification_chain_has_no_paid_tier(config: Config):
+    assert config.campaign.verification.chain == ["mx", "smtp"]
+    assert not hasattr(config.campaign.verification, "api_provider")
+    assert not hasattr(config.campaign.verification, "catch_all_daily_share")
+
+
+def test_scope_down_removed_the_pool_and_breaker_knobs(config: Config):
+    for gone in ("warmup", "circuit_breaker", "daily_global_cap", "step1_variant",
+                 "links_base_url"):
+        assert not hasattr(config.campaign, gone), f"{gone} should have been removed"
+    assert not hasattr(config.campaign.sending_window, "respect_recipient_timezone")
+    assert config.campaign.daily_cap == 25

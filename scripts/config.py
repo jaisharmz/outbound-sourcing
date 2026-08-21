@@ -132,7 +132,6 @@ class SendingWindow(Strict):
     days: list[str] = Field(default_factory=lambda: ["tue", "wed", "thu"])
     start: time = time(8, 0)
     end: time = time(16, 0)
-    respect_recipient_timezone: bool = True
 
     @field_validator("days")
     @classmethod
@@ -161,35 +160,19 @@ class InterSendDelay(Strict):
         return self
 
 
-class Warmup(Strict):
-    enabled: bool = True
-    start_per_day: int = 10
-    increment_per_day: int = 5
-
-
-class CircuitBreaker(Strict):
-    """The single most important safety mechanism in the system."""
-
-    enabled: bool = True
-    window_sends: int = 200
-    bounce_rate_threshold: float = Field(default=0.02, ge=0.0, le=1.0)
-
-
 class Verification(Strict):
+    """MX lookup then an SMTP RCPT probe. No paid tier.
+
+    Most Workspace and M365 domains are accept-all, so `catch_all` is the
+    expected outcome rather than an exception, and it sends normally. At this
+    volume the review gate is what stands between an inferred-pattern address
+    and a send, which is why the review export shows the basis as its own column.
+    """
+
     enabled: bool = True
-    # Chain order is meaningful: cheap checks first, paid API only as tiebreaker
-    # on what the free path could not resolve.
-    chain: list[Literal["mx", "smtp", "api"]] = Field(default_factory=lambda: ["mx", "smtp", "api"])
-    api_provider: Literal["millionverifier", "zerobounce", "none"] = "none"
-    api_key_env: str = "VERIFIER_API_KEY"
+    chain: list[Literal["mx", "smtp"]] = Field(default_factory=lambda: ["mx", "smtp"])
     smtp_timeout_seconds: int = 10
     smtp_probe_from: str = ""
-    # PLACEHOLDER, not a rule. Frontier labs and AI startups are Workspace and
-    # M365 nearly across the board, and both accept-all, so most contacts are
-    # expected to land in catch_all. Revise from observed bounce rate once real
-    # sends exist -- see references/deliverability.md.
-    catch_all_daily_share: float = Field(default=0.20, ge=0.0, le=1.0)
-    catch_all_share_is_placeholder: bool = True
 
 
 class Discovery(Strict):
@@ -207,11 +190,10 @@ class Campaign(Strict):
     # test_recipient is always allowed implicitly.
     test_send_allowlist: list[str] = Field(default_factory=list)
     timezone: str = "America/Los_Angeles"
-    daily_global_cap: int = 500
+    # Safety rail on a manually invoked send, not a scheduler budget.
+    daily_cap: int = 25
     sending_window: SendingWindow = Field(default_factory=SendingWindow)
     inter_send_delay: InterSendDelay = Field(default_factory=InterSendDelay)
-    warmup: Warmup = Field(default_factory=Warmup)
-    circuit_breaker: CircuitBreaker = Field(default_factory=CircuitBreaker)
     verification: Verification = Field(default_factory=Verification)
     discovery: Discovery = Field(default_factory=Discovery)
     attachments_root: str
@@ -231,10 +213,6 @@ class Campaign(Strict):
     # real sending. Raising one does not raise the other.
     max_attachment_bytes: int = 5_000_000
     campaign_max_attachment_bytes: int = 5_000_000
-    # Until a sending domain exists there is nowhere aligned to host the docs,
-    # so step 1 ships attachments. The A/B starts at milestone 8.
-    step1_variant: Literal["attachments", "links"] = "attachments"
-    links_base_url: str | None = None
 
     @field_validator("test_recipient")
     @classmethod
@@ -275,14 +253,6 @@ class Campaign(Strict):
                 return True
         return False
 
-    @model_validator(mode="after")
-    def _links_need_a_home(self) -> "Campaign":
-        if self.step1_variant == "links" and not self.links_base_url:
-            raise ValueError(
-                "step1_variant is 'links' but links_base_url is unset. Host the "
-                "documents on the sending domain and set links_base_url."
-            )
-        return self
 
 
 # ---------------------------------------------------------------- mailboxes
@@ -309,8 +279,6 @@ class Mailbox(Strict):
     # actually reads mail.
     reply_to: str | None = None
     auth_ref: str | None = None
-    daily_cap: int = 40
-    warmup_start_date: date | None = None
     enabled: bool = True
     # SMTP/IMAP settings. Ignored by other providers. `username` defaults to the
     # from address; auth_ref names the secrets.env key holding the password.
@@ -368,6 +336,9 @@ class Step(Strict):
     delay_business_days: int = 0
     jitter_business_days: int = 0
     attachment_set: str | None = None
+    # Documents linked rather than attached, by name. Independent of the
+    # attachment set: a first touch can attach two files and link a third.
+    links: dict[str, str] = Field(default_factory=dict)
     cc: list[str] | None = None
     bcc: list[str] | None = None
 
@@ -728,6 +699,17 @@ class Config:
                         f"contains {hit}. Write the copy before this campaign can start."
                     )
 
+        # A linked document with no URL is an unwritten email by another route.
+        for name in (self.campaigns.campaigns if mode == "campaign" else {}):
+            for step in self.steps_for(name):
+                for label, url in step.links.items():
+                    for hit in PLACEHOLDER_RE.findall(url):
+                        blockers.append(
+                            f"campaign {name!r} step {step.id!r} links {label!r} to the "
+                            f"placeholder {hit}. Set the real URL before this campaign "
+                            f"can start."
+                        )
+
         for mb in self.mailboxes.enabled():
             if PLACEHOLDER_RE.search(mb.from_.address) or "TBD" in mb.from_.address.upper():
                 blockers.append(
@@ -751,9 +733,6 @@ class Config:
                         f"max_attachment_bytes may be higher to allow test sends, but a "
                         f"campaign must not ship a set this size to strangers."
                     )
-
-            if self.campaign.step1_variant == "links" and not self.campaign.links_base_url:
-                blockers.append("step1_variant is 'links' but links_base_url is unset")
 
         return blockers
 

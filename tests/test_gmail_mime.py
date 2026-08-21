@@ -51,13 +51,6 @@ def test_no_cc_header_when_there_is_no_cc(config, gmail):
     assert msg["Bcc"] is None
 
 
-def test_variant_is_stamped_for_the_ab(config, gmail):
-    """Reply and bounce rate have to break down per arm."""
-    _, msg = build(config, gmail)
-    assert msg["X-Outbound-Variant"] == "attachments"
-    assert msg["X-Outbound-Step"] == "step1_initial"
-
-
 def test_attachments_are_attached_with_the_right_type(config, gmail):
     _, msg = build(config, gmail)
     parts = [p for p in msg.iter_attachments()]
@@ -66,14 +59,6 @@ def test_attachments_are_attached_with_the_right_type(config, gmail):
     assert {p.get_filename() for p in parts} == {
         "example_document_a.pdf", "example_document_b.pdf"
     }
-
-
-def test_links_variant_sends_no_attachments(config, gmail):
-    config.campaign.step1_variant = "links"
-    config.campaign.links_base_url = "https://docs.sending-domain.test"
-    _, msg = build(config, gmail)
-    assert list(msg.iter_attachments()) == []
-    assert msg["X-Outbound-Variant"] == "links"
 
 
 def test_body_survives_encoding(config, gmail):

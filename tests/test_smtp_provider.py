@@ -37,7 +37,11 @@ def test_app_password_spaces_are_stripped(mailbox):
     assert mailbox._password() == "abcdefghijklmnop"
 
 
-def test_missing_password_says_what_to_create(mailbox):
+def test_missing_password_says_what_to_create_without_dialling_out(mailbox, monkeypatch):
+    """A missing credential must fail before any socket is opened."""
+    def no_network(*a, **k):
+        raise AssertionError("opened a connection despite having no password")
+    monkeypatch.setattr(smtplib, "SMTP", no_network)
     mailbox.secrets = {}
     ok, msg = mailbox.verify_auth()
     assert not ok
@@ -56,14 +60,13 @@ def test_bcc_is_not_written_into_a_header(config, mailbox):
     assert "secret@x.test" not in msg.as_string()
 
 
-def test_from_reply_to_and_variant_headers(config, mailbox):
+def test_from_and_reply_to_headers(config, mailbox):
     email = render(config, config.sequence.steps[0], contact=CONTACT, account=ACCOUNT,
                    to="ada@target.test", from_header=mailbox.mailbox.from_.header(),
                    reply_to=mailbox.mailbox.reply_to)
     msg = mailbox.build_mime(email)
     assert msg["From"] == "Sender Name <sender@sending-domain.test>"
     assert msg["Reply-To"] == "replies@institution.test"
-    assert msg["X-Outbound-Variant"] == "attachments"
 
 
 def test_attachments_are_attached(config, mailbox):

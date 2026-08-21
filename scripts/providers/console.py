@@ -57,14 +57,9 @@ class ConsoleMailbox(MailboxProvider):
             f"Subject: {email.subject}",
             f"Date: {datetime.now(timezone.utc).strftime('%a, %d %b %Y %H:%M:%S +0000')}",
             "MIME-Version: 1.0",
-            "X-Outbound-Variant: " + email.variant,
         ]
         return "\n".join(lines)
 
     def list_replies(self, thread_ids: list[str], since: datetime | None = None) -> list[IncomingReply]:
         return []
 
-    def create_draft(self, email: RenderedEmail, thread_id: str | None = None) -> SendResult:
-        print("--- DRAFT (not sent) ---", file=self.stream)
-        print(email.preview(), file=self.stream)
-        return SendResult(ok=True, message_id="console-draft", thread_id=thread_id)

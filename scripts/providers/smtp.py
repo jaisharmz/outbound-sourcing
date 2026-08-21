@@ -82,16 +82,22 @@ class SMTPMailbox(MailboxProvider):
         return self.verify_auth()
 
     def _smtp(self) -> smtplib.SMTP:
+        # Read the credential before opening a socket. Otherwise a missing app
+        # password still dials the provider and waits out the timeout, which is
+        # slow when it happens and a network call in a test suite that must not
+        # make one.
+        password = self._password()
         server = smtplib.SMTP(self.mailbox.smtp_host, self.mailbox.smtp_port, timeout=30)
         server.ehlo()
         server.starttls(context=ssl.create_default_context())
         server.ehlo()
-        server.login(self.mailbox.login, self._password())
+        server.login(self.mailbox.login, password)
         return server
 
     def _imap(self) -> imaplib.IMAP4_SSL:
+        password = self._password()
         conn = imaplib.IMAP4_SSL(self.mailbox.imap_host, self.mailbox.imap_port)
-        conn.login(self.mailbox.login, self._password())
+        conn.login(self.mailbox.login, password)
         return conn
 
     # ------------------------------------------------------------------ send
@@ -110,7 +116,6 @@ class SMTPMailbox(MailboxProvider):
         # by finding our Message-ID in a reply's In-Reply-To/References, so an
         # ID we never saw is an ID we can never match against.
         msg["Message-ID"] = make_msgid(domain=addr.partition("@")[2] or None)
-        msg["X-Outbound-Variant"] = email_obj.variant
         msg["X-Outbound-Step"] = email_obj.step_id
         msg.set_content(email_obj.body)
 
@@ -249,28 +254,6 @@ class SMTPMailbox(MailboxProvider):
                 pass
         return out
 
-    def create_draft(self, email_obj: RenderedEmail, thread_id: str | None = None) -> SendResult:
-        """APPEND to the Drafts folder. Never an auto-send to a human."""
-        import time
-
-        msg = self.build_mime(email_obj)
-        try:
-            conn = self._imap()
-        except Exception as exc:
-            return SendResult(ok=False, error=_explain(exc), retryable=False)
-        try:
-            for folder in ('"[Gmail]/Drafts"', "Drafts", "INBOX.Drafts"):
-                typ, _ = conn.append(folder, r"\Draft", imaplib.Time2Internaldate(time.time()),
-                                     msg.as_bytes())
-                if typ == "OK":
-                    return SendResult(ok=True, message_id=msg["Message-ID"], thread_id=thread_id)
-            return SendResult(ok=False, error="no Drafts folder accepted the message",
-                              retryable=False)
-        finally:
-            try:
-                conn.logout()
-            except Exception:
-                pass
 
 
 def _imap_quote(value: str) -> str:

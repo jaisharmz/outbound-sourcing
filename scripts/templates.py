@@ -34,7 +34,11 @@ FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.S)
 
 
 def _env() -> Environment:
-    env = Environment(undefined=StrictUndefined, autoescape=False, keep_trailing_newline=True)
+    # trim_blocks/lstrip_blocks so a {% if %} guard does not leave a blank line
+    # behind when it is false. Without them, an absent personalization or an
+    # empty link list shows up as a gap in the middle of the email.
+    env = Environment(undefined=StrictUndefined, autoescape=False,
+                      keep_trailing_newline=True, trim_blocks=True, lstrip_blocks=True)
     env.filters["title_case"] = lambda s: str(s).title()
     return env
 
@@ -59,7 +63,6 @@ class RenderedEmail:
     from_header: str = ""
     reply_to: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
-    variant: str = "attachments"
     template_hash: str = ""
     step_id: str = ""
     campaign: str | None = None
@@ -88,7 +91,6 @@ class RenderedEmail:
             lines.append(f"Reply-To:   {self.reply_to}")
         lines += [
             f"Subject:    {self.subject}",
-            f"Variant:    {self.variant}",
         ]
         if self.attachments:
             total_mb = self.attachment_bytes / 1_048_576
@@ -141,8 +143,10 @@ def template_hash(config: Config, campaign: str | None = None) -> str:
             path = config.templates_dir / name
         if path.exists():
             h.update(path.read_bytes())
+    for step in config.steps_for(campaign):
+        for label, url in sorted(step.links.items()):
+            h.update(f"{label}={url}".encode())
     h.update((config.root / "persona.md").read_bytes())
-    h.update(config.campaign.step1_variant.encode())
     return h.hexdigest()[:16]
 
 
@@ -159,15 +163,6 @@ def attachments_for(config: Config, step: Step) -> list[Attachment]:
             raise ConfigError(f"attachment set {step.attachment_set!r}: missing file {path}")
         out.append(Attachment(path=path, name=fname))
     return out
-
-
-def document_links(config: Config, step: Step) -> list[tuple[str, str]]:
-    """The links variant of an attachment set, hosted on the sending domain."""
-    if not step.attachment_set or not config.campaign.links_base_url:
-        return []
-    aset = config.sequence.attachment_sets[step.attachment_set]
-    base = config.campaign.links_base_url.rstrip("/")
-    return [(f, f"{base}/{aset.dir.strip('/')}/{f}") for f in aset.files]
 
 
 def build_context(
@@ -197,8 +192,7 @@ def build_context(
             "footer": persona.footer,
             "unsubscribe_instructions": persona.unsubscribe_instructions,
         },
-        "campaign": {"name": campaign_name or campaign.name,
-                     "variant": campaign.step1_variant},
+        "campaign": {"name": campaign_name or campaign.name},
         "document_links": [{"name": n, "url": u} for n, u in links],
     }
 
@@ -219,16 +213,10 @@ def render(
     """Render one email. Pure function of config + contact; no I/O beyond files."""
     subject_tpl, body_tpl = parse_template(config.template_path(step, campaign))
 
-    # Step 1 has two variants and the A/B settles which performs better. Later
-    # steps always attach, because by then the recipient has engaged.
-    is_first = step.id == config.steps_for(campaign)[0].id
-    variant = config.campaign.step1_variant if is_first else "attachments"
-    if variant == "links" and is_first:
-        attachments: list[Attachment] = []
-        links = document_links(config, step)
-    else:
-        attachments = attachments_for(config, step)
-        links = []
+    # Attachments and links are independent: a first touch can attach two small
+    # documents and link a third that is too large to send.
+    attachments = attachments_for(config, step)
+    links = list(step.links.items())
 
     ctx = build_context(
         persona=config.persona,
@@ -258,7 +246,6 @@ def render(
         from_header=from_header,
         reply_to=reply_to,
         attachments=attachments,
-        variant=variant,
         template_hash=template_hash(config, campaign),
         step_id=step.id,
         campaign=campaign,

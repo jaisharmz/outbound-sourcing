@@ -199,26 +199,29 @@ outbound review import reviewed.csv
 Nothing queues without an approved row. This gate is not optional and not automatable —
 it is the last place a human sees the email before a stranger does.
 
-**Daily — send** (milestone 9)
+**Send, by hand**
 
 ```
 outbound send --dry-run
-outbound send
-outbound status
+outbound send --limit 20
 ```
 
-The daemon handles caps, warmup, windows, jitter, blackouts, and the circuit breaker. If
-the breaker trips, it stays tripped until you `--resume`. Find the bad addresses instead
-of raising the threshold.
+One mailbox, paced with jitter, stopping at `daily_cap`. Exits when the queue or the limit
+is exhausted. No daemon, no pool, no warmup — see the removal table in
+`references/setup.md`.
 
-**Daily — replies** (milestone 10)
+**Replies**
 
 ```
 outbound replies
+outbound replies --check
 ```
 
-Rules handle bounces, OOO and unsubscribes. Ambiguous ones come to you. Interested
-replies get a **draft**, never an auto-send.
+Bounces go to the permanent suppression list. Any reply stops the sequence for that contact
+and every other contact at the same company. `--check` lists tracked threads with no
+detected reply and their sent date, because reply matching over IMAP fails silently and a
+missed reply means emailing someone who already answered.
+
 
 ---
 

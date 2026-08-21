@@ -1,20 +1,10 @@
 # Deliverability
 
-## Volume ceilings
+## Scope
 
-500/day is not a single-inbox number. Realistic cold-outbound ceilings are **30–50
-sends/day/mailbox** before filters start scoring you down, whatever the provider's
-nominal cap says.
-
-| Target | Mailboxes |
-|---|---|
-| 100/day | ~3 |
-| 300/day | ~8 |
-| 500/day | 12–15 |
-
-The pool exists from day one even when it holds one entry. Retrofitting multi-mailbox
-onto a single-mailbox sender is painful, and the cap accounting, round-robin, and warmup
-ramp all change shape when there is more than one.
+One mailbox, 15–25 sends a day, invoked by hand. The pool, the warmup ramp, the dedicated
+domains and the circuit breaker are gone — see the removal table in `setup.md`. What
+follows is what still applies at this volume.
 
 ## CC accounting — what is actually binding
 
@@ -73,80 +63,28 @@ Do not run this volume through a primary personal or institutional address. Dedi
 sending domains with SPF, DKIM and DMARC; the primary address for replies only. Setup
 steps are in `setup.md`.
 
-## Warmup
-
-Default ramp: 10/day, +5/day, until the mailbox's `daily_cap`. From `warmup_start_date`
-per mailbox, so mailboxes added later ramp on their own clock rather than inheriting the
-pool's age.
-
-A domain needs age as well as volume ramp. Two to three weeks between first send and
-meaningful volume is normal and cannot be compressed by sending more.
-
 ## No tracking pixels
 
 Deliverability negative, researchers notice and it costs you credibility with exactly the
 audience you want, and reply rate is the metric that matters anyway.
 
-## Attachments vs links on first touch
-
-Three PDFs on a first-touch cold email is a strong spam signal and a real part of why
-cold campaigns land in Promotions. Total payload matters as much as count — a 14 MB
-first-touch message from an unknown sender is close to the worst available signal.
-
-### Size, not just count
+## Attachments and links
 
 Base64 inflates an attachment by 4/3, and a receiving gateway measures the encoded size.
-Many corporate gateways reject inbound above 10 MB and some above 5 MB. An oversized set
-therefore **hard-bounces for reasons that have nothing to do with address quality**,
-contaminating bounce rate and potentially tripping the circuit breaker on a false signal —
-which halts a campaign that was never actually misaddressed.
+Many corporate gateways reject inbound above 10 MB and some above 5 MB, so an oversized set
+**hard-bounces for reasons that have nothing to do with address quality**. That is true at
+20 sends a day exactly as it is at 500, which is why `max_attachment_bytes` and the
+campaign gate both stay.
 
-`campaign.yaml: max_attachment_bytes` (default 5 MB, wire size) is checked at config load
-and hard-fails with a per-file breakdown. Fix the files rather than raising the limit; a
-single oversized PDF is usually the entire problem.
+Attachments and links are independent, not an either/or: a first touch attaches what fits
+and links what does not. First touch is a resume plus a technical document at roughly 1 MB
+on the wire, with the 6.2 MB portfolio linked.
 
-### Running the A/B
+## Removed: the circuit breaker
 
-The system supports both and settles the question with data:
+The trailing-bounce halt existed to stop a runaway campaign from burning a dedicated
+sending domain. There is no dedicated domain now, and at 20 sends a day a bad list is
+visible by eye before it is visible in a rate.
 
-- `campaign.yaml: step1_variant: attachments | links`
-- links resolve against `links_base_url`, which should sit on the **sending domain** —
-  link-domain alignment with the From domain is worth more than convenience, and a link
-  to a third-party file host is its own filter signal
-- the variant is stamped on every `messages` row, so reply and bounce rate break down per
-  variant
-- later steps always attach; the A/B is about first touch only, since by step two the
-  recipient has already seen you
-
-Run it as a real split, not a switch flipped once, and give it enough volume to say
-something.
-
-**The attachments arm is two files plus a link, not three files.** The portfolio is
-published on the landing page rather than attached: it is browsed rather than read
-linearly, it is the single file most likely to trip a strict gateway, and a link produces
-an open signal an attachment cannot. So the arm under test is:
-
-| arm | first touch |
-|---|---|
-| attachments | resume + technical doc attached (~1 MB wire), portfolio linked |
-| links | all three linked, nothing attached |
-
-That comparison is worth running because it isolates *attaching anything at all* against
-*attaching nothing*. Comparing against a three-file 19 MB set would instead have measured
-gateway size limits, which is a known answer and not the question.
-
-**Both arms run in the seed send.** The seed sends are gated on the domains being ready,
-and the landing page lives on the sending domain — so by the time seeds go out, the links
-arm exists too. Spending the first placement measurement on a single variant wastes it:
-the comparison *is* the measurement. Split the seed addresses across both arms and check
-placement for each.
-
-## The circuit breaker
-
-If the trailing-200-send bounce rate exceeds the threshold (default 2%), all sending
-halts and requires a manual `--resume`. This is the single most important safety
-mechanism in the system. A runaway bad-address campaign burns a sending domain
-permanently, and that is not recoverable — no amount of later good behaviour buys the
-reputation back.
-
-Do not raise the threshold to get unblocked. Find the bad addresses.
+Bounce detection itself stayed. It feeds the permanent suppression list, and address
+quality is independent of volume.

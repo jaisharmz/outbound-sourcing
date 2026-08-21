@@ -53,21 +53,18 @@ def validate_config(config: Optional[str] = typer.Option(None, "--config")):
     cfg = _config(config)
     typer.secho(f"config OK: {cfg.root}", fg=typer.colors.GREEN)
     typer.echo(f"  persona:     {cfg.persona.name} ({cfg.persona.org})")
-    typer.echo(f"  campaign:    {cfg.campaign.name}, step1 variant = {cfg.campaign.step1_variant}")
-    typer.echo(f"  mailboxes:   {len(cfg.mailboxes.mailboxes)} defined, "
-               f"{len(cfg.mailboxes.enabled())} enabled")
+    typer.echo(f"  campaign:    {cfg.campaign.name}")
+    enabled = cfg.mailboxes.enabled()
+    typer.echo(f"  mailbox:     {enabled[0].id if enabled else '(none enabled)'}"
+               + (f"  From {enabled[0].from_.address}, Reply-To {enabled[0].reply_to}"
+                  if enabled else ""))
     typer.echo(f"  sequence:    {' -> '.join(s.id for s in cfg.sequence.steps)}")
     typer.echo(f"  dorks:       {len(cfg.dorks)} search seeds")
     typer.echo(f"  templates:   hash {templates.template_hash(cfg)}")
     typer.echo(f"  attachments: {cfg.campaign.max_attachment_bytes/1_000_000:.2f} MB max at "
                f"load (test sends), {cfg.campaign.campaign_max_attachment_bytes/1_000_000:.2f} "
                f"MB gate for campaign start")
-    if cfg.campaign.verification.catch_all_share_is_placeholder:
-        typer.secho(
-            "  note: verification.catch_all_daily_share is still flagged a placeholder. "
-            "Revise it from observed bounce rate after real sends.",
-            fg=typer.colors.YELLOW,
-        )
+    typer.echo(f"  daily cap:   {cfg.campaign.daily_cap} sends")
 
     blockers = cfg.preflight("campaign")
     if blockers:
@@ -502,7 +499,6 @@ def test_email(
     mailbox: Optional[str] = typer.Option(None, "--mailbox"),
     step: str = typer.Option("step1_initial", "--step"),
     campaign: Optional[str] = typer.Option(None, "--campaign"),
-    all_mailboxes: bool = typer.Option(False, "--all-mailboxes"),
     to: Optional[str] = typer.Option(None, "--to", help="override test_recipient"),
     force: bool = typer.Option(False, "--force",
                                help="send to an address outside test_send_allowlist"),
@@ -529,12 +525,9 @@ def test_email(
             typer.echo(f"  - {b.splitlines()[0]}")
         typer.echo("")
 
-    if all_mailboxes:
-        targets = [m.id for m in cfg.mailboxes.enabled()]
-    elif mailbox:
-        targets = [mailbox]
-    else:
-        _err("pass --mailbox <id> or --all-mailboxes")
+    targets = [mailbox] if mailbox else [m.id for m in cfg.mailboxes.enabled()]
+    if not targets:
+        _err("no mailbox enabled in mailboxes.yaml")
         raise typer.Exit(2)
 
     failures = 0
@@ -585,7 +578,6 @@ def _one_test_send(cfg: Config, conn, mailbox_id: str, step_id: str,
     typer.echo(f"  cc:          {', '.join(rendered.cc) or '(none)'}")
     typer.echo(f"  bcc:         {', '.join(rendered.bcc) or '(none)'}")
     typer.echo(f"  recipients:  {rendered.recipient_count} (what the daily cap counts)")
-    typer.echo(f"  variant:     {rendered.variant}")
     typer.echo(f"  template:    {rendered.template_hash}")
     if rendered.attachments:
         typer.echo("  attachments:")
@@ -786,12 +778,12 @@ def _record(conn, cfg: Config, contact_id: int, step_id: str, mailbox_id: str,
     key = f"{contact_id}:{step_id}:{rendered.template_hash}"
     cur = conn.execute(
         "INSERT OR IGNORE INTO messages (contact_id, campaign_id, step_id, mailbox_id, state,"
-        " to_addr, cc, bcc, recipient_count, subject, body_hash, template_hash, variant,"
+        " to_addr, cc, bcc, recipient_count, subject, body_hash, template_hash,"
         " attachment_names, idempotency_key, queued_at, sending_at)"
-        " VALUES (?,?,?,?,'sending',?,?,?,?,?,?,?,?,?,?,?,?)",
+        " VALUES (?,?,?,?,'sending',?,?,?,?,?,?,?,?,?,?,?)",
         (contact_id, campaign_id, step_id, mailbox_id, rendered.to,
          ",".join(rendered.cc), ",".join(rendered.bcc), rendered.recipient_count,
-         rendered.subject, rendered.body_hash, rendered.template_hash, rendered.variant,
+         rendered.subject, rendered.body_hash, rendered.template_hash,
          ",".join(a.name for a in rendered.attachments), key, utcnow(), utcnow()),
     )
     if cur.rowcount == 0:
