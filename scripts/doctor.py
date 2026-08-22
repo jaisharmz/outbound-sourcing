@@ -141,7 +141,7 @@ def check_secrets(root: Path) -> Check:
     if not path.exists():
         return _c("secrets.env present", FAIL, f"no {path}",
                   ["cp config.example/secrets.env.example config/secrets.env",
-                   "then fill in GMAIL_APP_PASSWORD and GITHUB_TOKEN"])
+                   "then fill in SMTP_APP_PASSWORD and GITHUB_TOKEN"])
     present = {}
     for line in path.read_text().splitlines():
         if "=" in line and not line.strip().startswith("#"):

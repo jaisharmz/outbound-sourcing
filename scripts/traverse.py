@@ -29,6 +29,81 @@ class Expansion:
     coauthors: dict = field(default_factory=dict)
 
 
+# Company aliases, because the string an author types is not the company's
+# trade name. Anything not listed falls back to the name itself.
+COMPANY_PATTERNS = {
+    "together ai": r"together\s*ai|together\.ai|togethercomputer",
+    "fireworks ai": r"fireworks\s*ai|fireworks\.ai",
+    "baseten": r"baseten",
+    "groq": r"\bgroq\b",
+    "etched": r"\betched\b",
+    "cursor": r"\bcursor\b|\banysphere\b",
+    "sambanova": r"sambanova",
+    "cerebras": r"cerebras",
+    "modular": r"\bmodular\s*(?:inc|ai)?\b",
+    "neural magic": r"neural\s*magic",
+    "perplexity ai": r"perplexity\s*ai|perplexity\.ai",
+    "mistral ai": r"mistral\s*ai|mistral\.ai",
+    "hugging face": r"hugging\s*face|huggingface",
+    "d-matrix": r"d-?matrix",
+    "tenstorrent": r"tenstorrent",
+    "furiosaai": r"furiosa",
+    "lightning ai": r"lightning\s*ai|grid\.ai",
+    "predibase": r"predibase",
+    "replicate": r"\breplicate,?\s*inc\b|replicate\.com",
+    "modal labs": r"modal\s*labs|modal\.com",
+    "rain ai": r"\brain\s*ai\b|rain\.ai",
+    "positron ai": r"positron\s*ai",
+    "recogni": r"recogni",
+    "lambda labs": r"lambda\s*labs",
+    "nebius": r"nebius",
+    "evolutionaryscale": r"evolutionary\s*scale",
+    "profluent": r"profluent",
+    "chai discovery": r"chai\s*discovery|chaidiscovery\.com",
+}
+
+# Different companies that share a name. "Cursor Insight Ltd." is a London
+# handwriting-analytics firm with a real, current, correctly-formatted
+# affiliation line -- it passed the founding-year and prose guards cleanly and
+# produced eight confident false positives. No heuristic separates it from
+# Anysphere's Cursor; only knowing they are different companies does.
+EXCLUDE_PATTERNS = {
+    "cursor": r"cursor\s+insight",
+    # "Modular" and "Rain" are ordinary words; "Lambda" is a Greek letter used
+    # everywhere in physics. Restrict to the company forms.
+    "modular": r"modular\s+(?:arithmetic|form|design|robot|construction|building)",
+    "rain ai": r"rainfall|precipitation|rain\s+gauge|rain\s+forest",
+    "lambda labs": r"lambda\s+(?:calculus|expression|function|cdm|cold)",
+    # "evolutionary scale" is ordinary prose in any comparative-genomics
+    # abstract ("conserved on an evolutionary scale"), which is exactly the
+    # Etched failure: a company name that is also a common phrase.
+    "evolutionaryscale": r"(?:on|at|over|across)\s+(?:an?\s+)?evolutionary\s+scale|evolutionary\s+scale\s+(?:of|from)",
+}
+
+# Founding years. A company cannot have employed anyone before it existed, and
+# this is the cheapest guard against a name that is also an ordinary English
+# word: "Etched" matched the verb in semiconductor abstracts back to 1991, and
+# "Cursor" matched an unrelated Chilean "Cursor Ltd." and Spanish ecology prose.
+FOUNDED = {
+    "together ai": 2022, "fireworks ai": 2022, "baseten": 2019,
+    "groq": 2016, "etched": 2022, "cursor": 2022,
+    "sambanova": 2017, "cerebras": 2016, "modular": 2022, "neural magic": 2018,
+    "perplexity ai": 2022, "mistral ai": 2023, "hugging face": 2016,
+    "d-matrix": 2019, "tenstorrent": 2016, "furiosaai": 2017,
+    "lightning ai": 2019, "predibase": 2021, "replicate": 2019,
+    "modal labs": 2021, "rain ai": 2017, "positron ai": 2023,
+    "recogni": 2017, "lambda labs": 2012, "nebius": 2024,
+    "evolutionaryscale": 2023, "profluent": 2022, "chai discovery": 2024,
+}
+
+# Prose tells. A real affiliation string is a short comma-delimited address
+# ("Groq, Inc, Palo Alto, CA, USA"); a biography is a sentence. If the segment
+# carrying the match reads like a sentence, the match is a word in prose rather
+# than an employer.
+PROSE_TELLS = (" is ", " was ", " received ", " graduated ", " served ",
+               " joined ", " prior to ", " degree ", " his ", " her ", " they ")
+
+
 def plausible_affiliation(raw: str, pattern: str) -> bool:
     """Does the matched text look like an employer, or like prose using the word?"""
     rx = re.compile(pattern, re.I)
