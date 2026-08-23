@@ -143,13 +143,25 @@ def test_observed_free_mail_is_kept(conn, config, candidates):
 
 
 def test_max_contacts_per_company_is_enforced(conn, config, candidates):
+    """The cap limits how many are SENDABLE, not how many are kept.
+
+    Over-cap records stay in the database marked unsendable so a colleague can
+    work them by hand; send_queue.due() filters on sendable=1, so they can never
+    be drafted. Discarding them threw away evidence that had already been paid for.
+    """
     config.icp.max_contacts_per_company = 1
-    ingest(conn, config, candidates)
-    n = conn.execute(
+    report = ingest(conn, config, candidates)
+    sendable = conn.execute(
         "SELECT COUNT(*) FROM contacts c JOIN accounts a ON a.id = c.account_id"
-        " WHERE a.name_normalized = 'northwind'"
+        " WHERE a.name_normalized = 'northwind' AND c.sendable = 1"
     ).fetchone()[0]
-    assert n == 1
+    assert sendable == 1
+    benched = conn.execute(
+        "SELECT COUNT(*) FROM contacts c JOIN accounts a ON a.id = c.account_id"
+        " WHERE a.name_normalized = 'northwind' AND c.sendable = 0"
+    ).fetchone()[0]
+    assert benched >= 1
+    assert len(report.benched) == benched
 
 
 def test_suppression_survives_a_fresh_discovery_run(conn, config, candidates):

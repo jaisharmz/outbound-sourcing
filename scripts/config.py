@@ -122,6 +122,10 @@ class ICP(Strict):
     # On by default: the cost is a few page fetches, and the failure it
     # prevents is only discoverable after the email has gone.
     drop_leadership: bool = True
+    # Titles held back for later rather than contacted. Founders and the C-suite:
+    # people who can say yes but are not the ones doing the work. Directors, heads,
+    # VPs, principals and staff engineers are deliberately not here.
+    hold_titles: list[str] = Field(default_factory=list)
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
