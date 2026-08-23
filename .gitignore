@@ -11,3 +11,7 @@ __pycache__/
 secrets.env
 token_*.json
 credentials.json
+
+# Review artefacts: real names, addresses and personalization. Never commit.
+review*.csv
+review*.md

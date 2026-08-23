@@ -233,6 +233,8 @@ def harvest_github_cmd(
     fund: Optional[str] = typer.Option(None, "--fund"),
     limit: Optional[int] = typer.Option(None, "--limit"),
     repos: int = typer.Option(4, "--repos"),
+    skip_search: bool = typer.Option(False, "--skip-search",
+        help="resolve orgs only from the override map and the domain stem"),
     config_path: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
 ):
@@ -270,7 +272,8 @@ def harvest_github_cmd(
     typer.echo(f"harvesting {len(rows)} domains...\n")
     results, statuses = [], {}
     for r in rows:
-        res = gh.harvest_domain(client, r["name"], r["domain"], repos=repos)
+        res = gh.harvest_domain(client, r["name"], r["domain"], repos=repos,
+                                skip_search=skip_search)
         results.append((r["id"], res))
         statuses[res.status] = statuses.get(res.status, 0) + 1
         if res.addresses:
@@ -1771,6 +1774,56 @@ def send_cmd(
     if ignore_window:
         argv.append("--ignore-window")
     raise typer.Exit(send_main(argv))
+
+
+@app.command("bench")
+def bench_cmd(
+    out: Optional[str] = typer.Option(None, "--out", help="write CSV here"),
+    company: Optional[str] = typer.Option(None, "--company"),
+    limit: int = typer.Option(50, "--limit"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """People held back by the per-company cap, for someone else to work by hand.
+
+    These are fully grounded contacts that would have been dropped. They are
+    stored unsendable, so this tool will never write to them -- handing the CSV
+    to a colleague is the only way they get used.
+    """
+    import csv as _csv
+
+    conn = open_db(db)
+    where = ["c.sendable = 0", "c.unsendable_reason LIKE 'over max_contacts_per_company%'"]
+    params: list = []
+    if company:
+        where.append("a.name LIKE ?")
+        params.append(f"%{company}%")
+    rows = conn.execute(
+        "SELECT c.name, c.email, c.title, a.name AS company, a.domain,"
+        "       (SELECT url FROM evidence e WHERE e.contact_id = c.id LIMIT 1) AS evidence_url"
+        f"  FROM contacts c JOIN accounts a ON a.id = c.account_id"
+        f" WHERE {' AND '.join(where)} ORDER BY a.name, c.name", tuple(params)).fetchall()
+
+    if not rows:
+        typer.echo("nobody on the bench. Either no company exceeded the cap, or this "
+                   "database predates the bench and needs a re-ingest.")
+        return
+
+    if out:
+        with open(out, "w", newline="", encoding="utf-8") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["name", "email", "title", "company", "domain", "evidence_url"])
+            for r in rows:
+                w.writerow([r["name"], r["email"], r["title"], r["company"],
+                            r["domain"], r["evidence_url"]])
+        typer.secho(f"  wrote {len(rows)} bench contact(s) to {out}", fg=typer.colors.GREEN)
+
+    by_company: dict[str, int] = {}
+    for r in rows:
+        by_company[r["company"]] = by_company.get(r["company"], 0) + 1
+    typer.echo(f"\n{len(rows)} on the bench across {len(by_company)} companies:")
+    for name, n in sorted(by_company.items(), key=lambda kv: -kv[1])[:limit]:
+        typer.echo(f"  {n:4}  {name}")
+    typer.echo("\nThese are never sent by this tool. Hand the CSV to whoever works them.")
 
 
 @app.command("drafts")

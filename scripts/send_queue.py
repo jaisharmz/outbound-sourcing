@@ -94,18 +94,27 @@ def gate(conn, config: Config, campaign: str, mailbox_id: str) -> list[str]:
     return problems
 
 
-def due(conn, campaign_id: int, limit: int) -> list:
+def due(conn, campaign_id: int, limit: int, campaign: str | None = None) -> list:
+    """Contacts ready to send FOR THIS CAMPAIGN.
+
+    The campaign filter is not cosmetic. Without it, `send --campaign X` drafted
+    every approved contact regardless of which campaign they belong to, so running
+    two campaigns produced a second draft to the same person under different copy
+    -- 292 duplicates in one run. A contact belongs to exactly one campaign; that
+    is what `contacts.campaign` is for.
+    """
     return conn.execute("""
         SELECT c.*, a.name AS account_name, a.domain AS account_domain
           FROM contacts c JOIN accounts a ON a.id = c.account_id
          WHERE c.approved = 1 AND c.sendable = 1
+           AND (? IS NULL OR c.campaign = ?)
            AND c.verification_status IN ('valid','catch_all','mx_only')
            AND a.validation_run = 0
            AND a.status NOT IN ('excluded','excluded_region','merged')
            AND NOT EXISTS (SELECT 1 FROM messages m
                             WHERE m.contact_id = c.id AND m.step_id = 'step1_initial'
                               AND m.state IN ('sent','sending'))
-         ORDER BY c.confidence DESC LIMIT ?""", (limit,)).fetchall()
+         ORDER BY c.confidence DESC LIMIT ?""", (campaign, campaign, limit)).fetchall()
 
 
 def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
@@ -252,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
         room = args.limit
 
     campaign_id = get_or_create_campaign(conn, args.campaign)
-    rows = due(conn, campaign_id, min(args.limit, room or args.limit))
+    rows = due(conn, campaign_id, min(args.limit, room or args.limit), args.campaign)
     if not rows:
         print("nothing due: no approved, verified, unsent contacts"); return 0
 

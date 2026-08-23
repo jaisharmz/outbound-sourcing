@@ -72,7 +72,7 @@ class Evidence(BaseModel):
 
 
 class Candidate(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, populate_by_name=True)
 
     name: str = Field(min_length=2)
     title: str = Field(min_length=2)
@@ -90,6 +90,11 @@ class Candidate(BaseModel):
     # lab's members together, so this is what the per-lab cap and lab-level
     # suppression key on -- without it both silently no-op.
     lab: str | None = None
+    # Written by `candidates-from-pages` as a note for the human reviewer: the
+    # other addresses seen on the same page, when the probe found more than one.
+    # Nothing downstream reads it, but extra="forbid" rejected the file that
+    # command generates, so its own output could never be ingested.
+    other_addresses: list[str] | None = Field(default=None, alias="_other_addresses")
 
     @field_validator("email")
     @classmethod

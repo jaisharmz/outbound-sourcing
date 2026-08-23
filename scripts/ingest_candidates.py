@@ -11,6 +11,7 @@ that never arrived.
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -42,6 +43,7 @@ class IngestReport:
     dropped_suppressed: list[str] = field(default_factory=list)
     dropped_duplicate: list[str] = field(default_factory=list)
     dropped_icp: list[str] = field(default_factory=list)
+    benched: list[str] = field(default_factory=list)
     dropped_free_mail: list[str] = field(default_factory=list)
     dropped_excluded: list[str] = field(default_factory=list)
     dropped_lab_full: list[str] = field(default_factory=list)
@@ -60,6 +62,7 @@ class IngestReport:
             ("suppressed", self.dropped_suppressed),
             ("duplicate", self.dropped_duplicate),
             ("off-ICP", self.dropped_icp),
+            ("held on the bench (over the per-company cap, kept for hand-off)", self.benched),
             ("free-mail", self.dropped_free_mail),
             ("personally excluded", self.dropped_excluded),
             ("lab already at cap", self.dropped_lab_full),
@@ -76,6 +79,30 @@ class IngestReport:
         for err in self.errors:
             lines.append(f"REJECTED: {err}")
         return "\n".join(lines)
+
+
+# Titles the operator wants held back rather than contacted: the people who
+# founded the company or sit in the C-suite. Directors, heads, VPs, principals
+# and staff engineers are intentionally absent -- those are targets, not leadership.
+def _held_title(title: str | None, config: Config) -> bool:
+    """True when the title is one the operator holds back for later.
+
+    Matched on word boundaries, not substrings: "cto" is inside "director", so a
+    plain `in` test held "Senior Director, Inference" -- a person the operator
+    explicitly wants contacted.
+    """
+    t = (title or "").lower()
+    if not t or t == "unknown":
+        return False
+    return any(re.search(rf"\b{re.escape(h.lower())}\b", t) for h in config.icp.hold_titles)
+
+
+LEADERSHIP_TITLE = re.compile(
+    r"\b(co-?founder|founder|chief\s+\w+\s+officer|chief\s+scientist|chief\s+executive|"
+    r"chief\s+technology|chief\s+technical|chief\s+operating|chief\s+financial|"
+    r"chief\s+medical|chief\s+business|chief\s+of\s+staff|\bcto\b|\bceo\b|\bcoo\b|"
+    r"\bcfo\b|\bcso\b|\bcmo\b|\bcbo\b|president|board\s+member|partner\s+emeritus)\b",
+    re.I)
 
 
 def passes_icp(candidate: Candidate, config: Config) -> str | None:
@@ -231,7 +258,17 @@ def _ingest_company(
     report: IngestReport,
 ) -> None:
     account_id = upsert_account(conn, cf, source, str(path))
-    per_company = 0
+    # Seed from what this account already has, not from zero. The counter used to
+    # start at 0 for every candidate file, so a company split across two files --
+    # or re-ingested on a later run -- got the full cap again each time. Crusoe
+    # reached 36 contacts against a cap of 15 that way. lab_is_full already counts
+    # from the database; this now matches it.
+    # Contacts this file is itself re-ingesting are excluded, or re-running an
+    # ingest would count its own rows and drop them as over-cap.
+    _emails = [c.email.strip().lower() for c in cf.candidates]
+    _q = ("SELECT COUNT(*) FROM contacts WHERE account_id=? AND sendable=1"
+          + (" AND LOWER(email) NOT IN (%s)" % ",".join("?" * len(_emails)) if _emails else ""))
+    per_company = conn.execute(_q, (account_id, *_emails)).fetchone()[0]
 
     # One scan per company, covering every candidate in the file. A founder or
     # exec reached by a cold sequence is the failure that is only visible after
@@ -262,8 +299,26 @@ def _ingest_company(
         # Checked here rather than at send: someone the operator already knows
         # should never reach the review queue, because the reviewer's job is
         # judging the pitch, not remembering every colleague.
+        # Founders and execs are held rather than discarded: the operator wants a
+        # "contact later" list, and re-deriving these people costs another scan.
+        # Stored unsendable, so the send path can never pick them up.
         if where := on_leadership.get(c.name):
+            cid, _ = upsert_contact(conn, account_id, c, str(path))
+            conn.execute(
+                "UPDATE contacts SET sendable = 0, unsendable_reason = ? WHERE id = ?",
+                ("on a founders/leadership page; held for future contact", cid))
             report.dropped_leadership.append(f"{c.name} ({where[:110]})")
+            continue
+
+        # Founder / C-suite titles, held for the same reason. Directors, VPs and
+        # senior individual contributors are deliberately NOT here -- the operator
+        # wants those contacted.
+        if _held_title(c.title, config):
+            cid, _ = upsert_contact(conn, account_id, c, str(path))
+            conn.execute(
+                "UPDATE contacts SET sendable = 0, unsendable_reason = ? WHERE id = ?",
+                (f"leadership title ({c.title}); held for future contact", cid))
+            report.dropped_leadership.append(f"{c.name} <{email}> ({c.title})")
             continue
         if ex := exclusions.check(conn, config, c.name, lab=lab, company=c.company):
             report.dropped_excluded.append(f"{c.name} <{email}> ({ex['reason']})")
@@ -293,10 +348,17 @@ def _ingest_company(
         if reason := passes_icp(c, config):
             report.dropped_icp.append(f"{email} ({reason})")
             continue
+        # Over the cap, the record is kept rather than discarded: the evidence was
+        # already paid for, and a colleague can work the overflow by hand. It is
+        # stored unsendable, so send_queue.due() -- which filters on sendable=1 --
+        # can never draft it, and it does not count toward the cap either.
         if per_company >= config.icp.max_contacts_per_company:
-            report.dropped_icp.append(
-                f"{email} (over max_contacts_per_company; "
-                f"{seniority.name(c.title)} ranked last)")
+            cid, _ = upsert_contact(conn, account_id, c, str(path))
+            conn.execute(
+                "UPDATE contacts SET sendable = 0, unsendable_reason = ? WHERE id = ?",
+                (f"over max_contacts_per_company ({config.icp.max_contacts_per_company});"
+                 " held on the bench for hand-off", cid))
+            report.benched.append(f"{email} ({c.name} at {cf.company})")
             continue
 
         seen_people[person_key] = email
