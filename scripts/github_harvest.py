@@ -223,8 +223,14 @@ ORG_OVERRIDES = {
     'allen institute for ai': 'allenai',
     'ambi robotics': 'ambi-robotics',
     'ambience healthcare': 'Ambience-Healthcare',
+    # The largest engineering orgs are the ones search resolves worst: their org
+    # name shares nothing with the company name or the domain stem, so all four
+    # of these returned no_org_found and read as "no public code" when each has
+    # hundreds of public commits from company addresses.
+    'amazon science / aws ai': 'awslabs',
     'anduril': 'anduril',
     'anduril defense': 'anduril',
+    'anthropic': 'anthropics',
     'anyscale': 'anyscale',
     'anyscale ray': 'anyscale',
     'apex space': 'apex-space',
@@ -359,6 +365,7 @@ ORG_OVERRIDES = {
     'mat3ra': 'mat3ra',
     'matternet': 'matternet',
     'matterport': 'matterport',
+    'meta ai / fair': 'facebook',
     'midjourney': 'midjourney',
     'minion ai': 'minionai',
     'miso robotics': 'MisoRobotics',
@@ -459,6 +466,7 @@ ORG_OVERRIDES = {
     'symbolica': 'symbolica-ai',
     'tangram vision': 'Tangram-Vision',
     'tecton': 'tecton-ai',
+    'tesla': 'teslamotors',
     'tenstorrent': 'tenstorrent',
     'terra praxis': 'TerraPraxis',
     'threekit': 'Threekit',
