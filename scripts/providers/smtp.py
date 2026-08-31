@@ -95,9 +95,18 @@ class SMTPMailbox(MailboxProvider):
         server.login(self.mailbox.login, password)
         return server
 
-    def _imap(self) -> imaplib.IMAP4_SSL:
+    def _imap(self, timeout: int = 60) -> imaplib.IMAP4_SSL:
+        """Connect to IMAP with a socket timeout.
+
+        Without one, imaplib blocks on read forever. Gmail stopped answering
+        partway through a 200-draft run and the process sat on an established
+        socket at 0% CPU for half an hour -- indistinguishable from working, and
+        it would never have returned. A retryable error after 60s is recoverable
+        because create_draft is idempotent on the message key; a hang is not.
+        """
         password = self._password()
-        conn = imaplib.IMAP4_SSL(self.mailbox.imap_host, self.mailbox.imap_port)
+        conn = imaplib.IMAP4_SSL(self.mailbox.imap_host, self.mailbox.imap_port,
+                                 timeout=timeout)
         conn.login(self.mailbox.login, password)
         return conn
 
