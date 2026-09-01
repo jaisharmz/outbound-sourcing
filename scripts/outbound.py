@@ -1826,6 +1826,47 @@ def bench_cmd(
     typer.echo("\nThese are never sent by this tool. Hand the CSV to whoever works them.")
 
 
+@app.command("swap-stale-drafts")
+def swap_stale_drafts_cmd(
+    new_marker: str = typer.Option(..., "--new-marker",
+        help="a phrase only the corrected copy contains"),
+    old_marker: str = typer.Option(..., "--old-marker",
+        help="a phrase only the stale copy contains"),
+    folder: str = typer.Option('"[Gmail]/Drafts"', "--folder"),
+    mailbox: str = typer.Option("gmail-smtp", "--mailbox"),
+    apply: bool = typer.Option(False, "--apply", help="actually delete"),
+    config_path: Optional[str] = typer.Option(None, "--config"),
+):
+    """Delete drafts whose copy predates a template change, once replaced.
+
+    A copy edit does not change the subject line, so the stale draft and its
+    corrected replacement share both recipient and subject and cannot be told
+    apart the way everything else here matches. This reads the body instead, and
+    deletes a stale draft only once a corrected one to the same recipient exists
+    -- so a failure halfway through leaves duplicates, never a hole.
+    """
+    from . import swap_stale_drafts as swap_mod
+
+    cfg = _config(config_path)
+    provider = providers.build(cfg.mailboxes.get(mailbox), cfg.secrets())
+    rep = swap_mod.swap(provider, new_marker=new_marker, old_marker=old_marker,
+                        folder=folder, apply=apply)
+
+    typer.echo(f"{rep.total} message(s) in {folder}\n")
+    typer.echo(f"  corrected copy : {rep.corrected}")
+    typer.echo(f"  stale copy     : {rep.stale}")
+    typer.echo(f"  neither marker : {rep.unrecognised}   (left alone -- not understood)\n")
+    typer.echo(f"stale WITH a corrected replacement: {len(rep.deletable)}")
+    typer.echo(f"stale WITHOUT one (kept):           {len(rep.orphaned)}")
+    for to, _uid in rep.orphaned[:10]:
+        typer.echo(f"    keeping {to}")
+    if not apply:
+        typer.secho("\ndry run -- nothing deleted. Re-run with --apply.",
+                    fg=typer.colors.YELLOW)
+    else:
+        typer.secho(f"\ndeleted {rep.deleted} stale draft(s).", fg=typer.colors.GREEN)
+
+
 @app.command("drafts")
 def drafts_cmd(
     campaign: Optional[str] = typer.Option(None, "--campaign"),
