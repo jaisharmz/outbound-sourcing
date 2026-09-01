@@ -182,6 +182,38 @@ class SMTPMailbox(MailboxProvider):
         return SendResult(ok=True, message_id=msg["Message-ID"], thread_id=None,
                           headers="\n".join(f"{k}: {v}" for k, v in msg.items()))
 
+    def delete_draft(self, message_id: str) -> tuple[bool, str]:
+        """Delete the draft carrying this Message-ID, if it is still there.
+
+        Matched on Message-ID, not recipient+subject: two drafts to the same
+        person under the same subject are exactly the case that matters here,
+        and only the Message-ID tells them apart. A draft the operator already
+        deleted is not an error -- the desired end state is that it is gone.
+        """
+        if not message_id:
+            return False, "no Message-ID recorded for this draft"
+        folder = self.mailbox.drafts_folder or "[Gmail]/Drafts"
+        try:
+            conn = self._imap()
+            try:
+                conn.select(f'"{folder}"', readonly=False)
+                typ, data = conn.uid("SEARCH", None, "HEADER", "Message-ID",
+                                     _imap_quote(message_id))
+                uids = data[0].split() if data and data[0] else []
+                if not uids:
+                    return True, "draft already gone"
+                for uid in uids:
+                    conn.uid("STORE", uid, "+FLAGS", "\\Deleted")
+                conn.expunge()
+                return True, f"draft deleted ({len(uids)})"
+            finally:
+                try:
+                    conn.logout()
+                except Exception:
+                    pass
+        except Exception as exc:
+            return False, _explain(exc)
+
     def send(self, email_obj: RenderedEmail) -> SendResult:
         msg = self.build_mime(email_obj)
         # Bcc goes in the envelope only, never in a header SMTP would transmit.

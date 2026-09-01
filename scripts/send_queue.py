@@ -80,17 +80,25 @@ def gate(conn, config: Config, campaign: str, mailbox_id: str) -> list[str]:
                 f"'Send mail as'), then re-run: outbound test-email --mailbox "
                 f"{mailbox_id}")
 
+    # What must be true is that *this copy* was proven deliverable, not that it
+    # was the most recent thing tested. Keying on the newest test send alone
+    # made campaigns mutually exclusive: testing `startup` re-blocked
+    # `frontier-lab` and vice versa, so a mailbox could never have two
+    # sendable campaigns at once and every alternation cost a real send.
     h = templates.template_hash(config, campaign)
-    row = conn.execute(
+    ever = conn.execute("SELECT 1 FROM test_sends WHERE mailbox_id=? AND ok=1"
+                        " LIMIT 1", (mailbox_id,)).fetchone()
+    match = conn.execute(
         "SELECT template_hash, sent_at FROM test_sends WHERE mailbox_id=? AND ok=1"
-        " ORDER BY id DESC LIMIT 1", (mailbox_id,)).fetchone()
-    if not row:
+        " AND template_hash=? ORDER BY id DESC LIMIT 1", (mailbox_id, h)).fetchone()
+    if not ever:
         problems.append(f"mailbox {mailbox_id!r} has never passed a test send. "
                         f"Run: outbound test-email --mailbox {mailbox_id}")
-    elif row["template_hash"] != h:
+    elif not match:
         problems.append(
-            f"templates changed since the last passing test send for {mailbox_id!r} "
-            f"({row['template_hash']} then, {h} now). Re-run the test send.")
+            f"the {campaign!r} templates have changed since they last passed a test "
+            f"send on {mailbox_id!r} (nothing proven for hash {h}). Re-run: "
+            f"outbound test-email --mailbox {mailbox_id} --campaign {campaign}")
     return problems
 
 
@@ -118,7 +126,7 @@ def due(conn, campaign_id: int, limit: int, campaign: str | None = None) -> list
 
 
 def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
-             campaign_id: int, dry_run: bool, mode: str = "draft") -> tuple[bool, str]:
+             campaign_id: int, dry_run: bool, mode: str = "draft") -> tuple[str, str]:
     """Draft or send one message.
 
     `mode` is "draft" by default. A draft is not a send: it does not count
@@ -126,9 +134,14 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
     start reply tracking, because none of those things have happened until the
     operator presses send in Gmail. Conflating the two would suppress a company
     the operator never actually wrote to.
+
+    Returns one of "done", "held" or "failed". "held" is the important one: a
+    suppressed address and an already-handled row are the queue working, not
+    faults, and folding them into a failure count made an unattended run cry
+    wolf on every pass.
     """
     if reason := suppression.is_suppressed(conn, row["email"], row["account_name"]):
-        return False, f"suppressed: {reason}"
+        return "held", f"suppressed: {reason}"
 
     step = config.step_for("step1_initial", campaign)
     cc = resolve_cc(config.cc, domain=row["account_domain"], campaign=campaign,
@@ -142,17 +155,40 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
         to=row["email"], cc=cc.cc, bcc=cc.bcc,
         from_header=mailbox.from_.header(), reply_to=mailbox.reply_to, campaign=campaign)
 
-    if dry_run:
-        verb = "would draft" if mode == "draft" else "would send"
-        return True, (f"{verb} to {row['email']} (cc {cc.cc or 'none'}, "
-                      f"{email.recipient_count} recipients, "
-                      f"{len(email.attachments)} attachment(s))")
-
     key = f"{row['id']}:{step.id}:{email.template_hash}"
+
+    if dry_run:
+        # The dry run reads the same row the real run will collide with. Without
+        # this it reported nine clean sends for nine contacts every one of which
+        # the idempotency key would have refused -- a rehearsal that could not
+        # fail told us nothing about the run it was rehearsing.
+        prior = conn.execute("SELECT state FROM messages WHERE idempotency_key=?",
+                             (key,)).fetchone()
+        if prior and not (mode == "send" and prior["state"] == "drafted"):
+            return "held", f"already {prior['state']} (idempotency key exists)"
+        verb = "would draft" if mode == "draft" else "would send"
+        promoting = " (promoting the existing draft)" if prior else ""
+        return "done", (f"{verb} to {row['email']}{promoting} (cc {cc.cc or 'none'}, "
+                        f"{email.recipient_count} recipients, "
+                        f"{len(email.attachments)} attachment(s))")
+
     in_flight = "drafting" if mode == "draft" else "sending"
+    superseded: list = []
     # Commit the in-flight state BEFORE the provider call. A crash between the
     # two leaves a row to reconcile, never a second email or a second draft.
     with transaction(conn):
+        if mode == "send":
+            # Every draft to this person for this step is superseded by actually
+            # sending, not only the one whose idempotency key matched. A template
+            # edit appends a corrected draft and leaves the stale one behind, so
+            # 149 contacts in this queue are holding two. Deleting just the
+            # matched one leaves the other in the operator's Drafts folder,
+            # reading as unsent work addressed to someone already written to.
+            # Read before the promote below, so the promoted row is in the list.
+            superseded = conn.execute(
+                "SELECT id, provider_message_id FROM messages"
+                " WHERE contact_id=? AND step_id=? AND state='drafted'",
+                (row["id"], step.id)).fetchall()
         cur = conn.execute(
             "INSERT OR IGNORE INTO messages (contact_id, campaign_id, step_id, mailbox_id,"
             " state, to_addr, cc, bcc, recipient_count, subject, body_hash, template_hash,"
@@ -163,7 +199,21 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
              email.template_hash, ",".join(a.name for a in email.attachments),
              key, utcnow(), utcnow()))
         if cur.rowcount == 0:
-            return False, "already queued, drafted or sent (idempotency key exists)"
+            prior = conn.execute(
+                "SELECT state, provider_message_id FROM messages WHERE idempotency_key=?",
+                (key,)).fetchone()
+            state = prior["state"] if prior else "queued"
+            # A drafted row is the queue, not a collision. `send` exists to turn
+            # reviewed drafts into sends, and the key is deliberately stable
+            # across both -- so the second visit has to promote the row rather
+            # than refuse it, or a drafted contact could never be sent at all.
+            # Every other state still refuses: 'sent' is done, 'sending' and
+            # 'drafting' belong to a run in flight, and an ambiguous 'failed' is
+            # never silently retried.
+            if mode != "send" or state != "drafted":
+                return "held", f"already {state} (idempotency key exists)"
+            conn.execute("UPDATE messages SET state='sending', sending_at=?"
+                         " WHERE idempotency_key=?", (utcnow(), key))
 
     result = provider.create_draft(email) if mode == "draft" else provider.send(email)
     with transaction(conn):
@@ -190,8 +240,37 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
         log_event(conn, "info" if result.ok else "error",
                   "draft" if mode == "draft" else "send",
                   email=row["email"], ok=result.ok, error=result.error)
+
     verb = "drafted for" if mode == "draft" else "sent to"
-    return result.ok, (result.error or f"{verb} {row['email']}")
+    if not result.ok:
+        return "failed", result.error or f"failed for {row['email']}"
+
+    # Clear the drafts only now, after the row says 'sent'. Ordered that way on
+    # purpose: a crash here leaves a draft next to a delivered message, which
+    # reconcile can see and explain, whereas deleting first and dying would
+    # destroy the only copy of something that never went out.
+    stranded = []
+    for mid, provider_message_id in superseded:
+        gone, detail = provider.delete_draft(provider_message_id)
+        if gone:
+            # 'sent' for the row that was just delivered, 'cancelled' for the
+            # superseded copies. The guard on 'drafted' is what keeps the
+            # promoted row out of this.
+            with transaction(conn):
+                conn.execute("UPDATE messages SET state='cancelled'"
+                             " WHERE id=? AND state='drafted'", (mid,))
+        else:
+            stranded.append(detail)
+    if stranded:
+        # Not a send failure -- the message went. But a leftover draft is exactly
+        # the duplicate this path exists to prevent, so it is surfaced rather
+        # than swallowed.
+        with transaction(conn):
+            log_event(conn, "warn", "draft.orphaned", email=row["email"],
+                      error="; ".join(stranded))
+    note = (f" -- {len(stranded)} draft(s) not removed from Drafts: {stranded[0]}"
+            if stranded else "")
+    return "done", f"{verb} {row['email']}{note}"
 
 
 def print_drafts(conn) -> int:
@@ -295,19 +374,24 @@ def main(argv: list[str] | None = None) -> int:
     verb = "to draft" if mode == "draft" else "to send"
     print(f"{'DRY RUN: ' if args.dry_run else ''}{len(rows)} {verb} from {mailbox.id}"
           f"{'' if mode == 'draft' else f' ({already}/{cap} recipients used today)'}\n")
-    done = failed = 0
+    done = failed = held = 0
+    marks = {"done": "ok  ", "held": "hold", "failed": "FAIL"}
     delay = config.campaign.inter_send_delay
     for i, row in enumerate(rows):
-        ok, detail = send_one(conn, config, provider, mailbox, row, args.campaign,
-                              campaign_id, args.dry_run, mode=mode)
-        print(f"  {'ok  ' if ok else 'FAIL'} {row['name'][:22]:<22} {detail[:80]}")
-        done += ok; failed += not ok
+        outcome, detail = send_one(conn, config, provider, mailbox, row, args.campaign,
+                                   campaign_id, args.dry_run, mode=mode)
+        print(f"  {marks[outcome]} {row['name'][:22]:<22} {detail[:80]}")
+        done += outcome == "done"
+        failed += outcome == "failed"
+        held += outcome == "held"
         # Pacing exists to look human to a receiving server. Nothing is reaching
-        # one in draft mode, so there is nothing to pace.
-        if mode == "send" and not args.dry_run and i < len(rows) - 1:
+        # one in draft mode, and a held row never reached one either.
+        if (mode == "send" and outcome == "done" and not args.dry_run
+                and i < len(rows) - 1):
             time.sleep(random.uniform(delay.min_seconds, delay.max_seconds))
     past = "drafted" if mode == "draft" else "sent"
-    print(f"\n{done} {('would be ' + past) if args.dry_run else past}, {failed} failed")
+    print(f"\n{done} {('would be ' + past) if args.dry_run else past}, {failed} failed"
+          + (f", {held} held" if held else ""))
     if mode == "draft" and done and not args.dry_run:
         # The whole draft list, printed here rather than left behind a command
         # the operator has to remember exists. `mark-sent` is the one manual

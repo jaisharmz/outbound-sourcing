@@ -42,9 +42,9 @@ def test_a_draft_does_not_count_as_contact(monkeypatch, tmp_path):
             return SendResult(ok=True, message_id="<sent@test>")
 
     row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
-    ok, detail = send_queue.send_one(conn, config, FakeProvider(), mailbox, row,
-                                     "startup", 1, dry_run=False, mode="draft")
-    assert ok and "drafted for" in detail
+    outcome, detail = send_queue.send_one(conn, config, FakeProvider(), mailbox, row,
+                                          "startup", 1, dry_run=False, mode="draft")
+    assert outcome == "done" and "drafted for" in detail
     assert calls.get("drafted") and "sent" not in calls
 
     msg = conn.execute("SELECT state, drafted_at, sent_at FROM messages").fetchone()
@@ -69,13 +69,195 @@ def test_send_mode_still_sends(monkeypatch, tmp_path):
             return SendResult(ok=True, message_id="<s@test>")
 
     row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
-    ok, _ = send_queue.send_one(conn, config, FakeProvider(), mailbox, row,
-                                "startup", 1, dry_run=False, mode="send")
-    assert ok and calls.get("sent") and "drafted" not in calls
+    outcome, _ = send_queue.send_one(conn, config, FakeProvider(), mailbox, row,
+                                     "startup", 1, dry_run=False, mode="send")
+    assert outcome == "done" and calls.get("sent") and "drafted" not in calls
     assert conn.execute("SELECT state FROM messages").fetchone()["state"] == "sent"
     assert conn.execute("SELECT status FROM contacts WHERE id=?",
                         (row["id"],)).fetchone()["status"] == "active"
     assert conn.execute("SELECT COUNT(*) FROM mailbox_day").fetchone()[0] == 1
+
+
+class _Recorder:
+    """A provider that remembers what it was asked to do."""
+
+    def __init__(self, delete_ok=True):
+        self.calls = []
+        self.deleted = []
+        self._delete_ok = delete_ok
+
+    def create_draft(self, email):
+        self.calls.append("draft")
+        return SendResult(ok=True, message_id="<draft-1@test>")
+
+    def send(self, email):
+        self.calls.append("send")
+        return SendResult(ok=True, message_id="<sent-1@test>")
+
+    def delete_draft(self, message_id):
+        self.deleted.append(message_id)
+        return (True, "draft deleted (1)") if self._delete_ok else (False, "timed out")
+
+
+def test_a_drafted_contact_can_still_be_sent(monkeypatch, tmp_path):
+    """The queue is the drafts folder, so `send` has to be able to drain it.
+
+    The idempotency key is contact:step:template_hash and is deliberately the
+    same for a draft and its send. That made the second visit collide with the
+    first: every one of 545 reviewed drafts would have been refused as "already
+    queued, drafted or sent" and the scheduled sender would have sent nothing,
+    every hour, while reporting failures.
+    """
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+
+    outcome, _ = send_queue.send_one(conn, config, provider, mailbox, row,
+                                     "startup", 1, dry_run=False, mode="draft")
+    assert outcome == "done"
+
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "done", detail
+    assert provider.calls == ["draft", "send"]
+
+    msg = conn.execute("SELECT state, drafted_at, sent_at FROM messages").fetchone()
+    assert msg["state"] == "sent" and msg["sent_at"]
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+    assert conn.execute("SELECT status FROM contacts WHERE id=?",
+                        (row["id"],)).fetchone()["status"] == "active"
+    assert conn.execute("SELECT COUNT(*) FROM mailbox_day").fetchone()[0] == 1
+
+
+def test_sending_a_draft_removes_it_from_the_drafts_folder(monkeypatch, tmp_path):
+    """Otherwise the operator scrolls Drafts and sends the same mail by hand."""
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="draft")
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="send")
+    assert provider.deleted == ["<draft-1@test>"]
+
+
+def test_a_draft_that_will_not_delete_is_reported_not_swallowed(monkeypatch, tmp_path):
+    """The send succeeded, so it is not a failure -- but a leftover draft is the
+    duplicate this path exists to prevent, so it has to reach the operator."""
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder(delete_ok=False)
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="draft")
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "done"
+    assert "draft(s) not removed" in detail
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE event='draft.orphaned'"
+                        ).fetchone()[0] == 1
+
+
+def test_a_superseded_draft_is_cleared_too(monkeypatch, tmp_path):
+    """A template edit leaves two drafts to the same person: the corrected copy
+    and the stale one it was meant to replace. Both are superseded the moment
+    the mail actually goes, and only the corrected one shares the send's
+    idempotency key -- so matching on that key alone left 149 stale drafts in
+    the folder for a human to send a second time.
+    """
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+
+    # The stale draft: same contact and step, an older template hash.
+    conn.execute("INSERT INTO messages (contact_id, step_id, mailbox_id, state,"
+                 " to_addr, template_hash, idempotency_key, provider_message_id)"
+                 " VALUES (1,'step1_initial','gmail-smtp','drafted','a@b.test',"
+                 " 'oldhash','1:step1_initial:oldhash','<stale@test>')")
+    conn.commit()
+
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="draft")
+    outcome, _ = send_queue.send_one(conn, config, provider, mailbox, row,
+                                     "startup", 1, dry_run=False, mode="send")
+
+    assert outcome == "done"
+    assert sorted(provider.deleted) == ["<draft-1@test>", "<stale@test>"]
+    states = dict(conn.execute("SELECT template_hash, state FROM messages"))
+    assert states["oldhash"] == "cancelled"
+    assert states.pop("oldhash") and set(states.values()) == {"sent"}
+    # Nothing is left for `outbound drafts` to show, or for a human to click.
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE state='drafted'"
+                        ).fetchone()[0] == 0
+
+
+def test_an_already_sent_contact_is_held_not_resent(monkeypatch, tmp_path):
+    """Promoting 'drafted' must not also promote 'sent'."""
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="send")
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "held" and "already sent" in detail
+    assert provider.calls == ["send"]
+    assert conn.execute("SELECT COUNT(*) FROM mailbox_day").fetchone()[0] == 1
+
+
+def test_an_ambiguous_failure_is_not_retried_by_the_scheduler(monkeypatch, tmp_path):
+    """'failed' means nobody knows whether it arrived. Only a human clears it."""
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+
+    class Flaky(_Recorder):
+        def send(self, email):
+            self.calls.append("send")
+            return SendResult(ok=False, error="TimeoutError")
+
+    provider = Flaky()
+    outcome, _ = send_queue.send_one(conn, config, provider, mailbox, row,
+                                     "startup", 1, dry_run=False, mode="send")
+    assert outcome == "failed"
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "held" and "already failed" in detail
+    assert provider.calls == ["send"]
+
+
+def test_a_suppressed_address_is_held_rather_than_counted_as_a_failure(monkeypatch, tmp_path):
+    """Anthropic was suppressed mid-campaign. An unattended hourly sender that
+    counts every suppressed contact as a failure pages the operator all day
+    about the queue doing exactly what it was told."""
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(send_queue.suppression, "is_suppressed",
+                        lambda *a, **k: "domain suppressed")
+    outcome, detail = send_queue.send_one(conn, config, _Recorder(), mailbox, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "held" and "suppressed" in detail
+
+
+def test_the_dry_run_sees_what_the_real_run_would_hit(monkeypatch, tmp_path):
+    """A rehearsal that returns 'ok' for a row the real run refuses is worse
+    than no rehearsal: it is why a broken schedule looked ready to go."""
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="send")
+
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=True, mode="send")
+    assert outcome == "held" and "already sent" in detail
+    assert provider.calls == ["send"], "a dry run must not touch the provider"
 
 
 def test_a_provider_without_drafts_says_so_rather_than_sending():
@@ -449,3 +631,53 @@ def test_our_own_cc_addresses_are_not_counted_as_failed_prospects():
         "failed\r\n")
     msg = _email.message_from_string(raw)
     assert set(B._failed_recipients(msg)) == {"dead@acme.test", "jais@berkeley.edu"}
+
+
+def test_two_campaigns_can_be_sendable_at_once(tmp_path, monkeypatch):
+    """Testing one campaign must not re-block another.
+
+    The gate used to read the single newest passing test send, so proving
+    `startup` immediately un-proved `frontier-lab`. Alternating cost a real
+    send each way and made a two-campaign schedule impossible.
+    """
+    from pathlib import Path
+
+    from scripts import send_queue, templates
+    from scripts.config import Config
+    from scripts.db import open_db
+
+    conn = open_db(str(tmp_path / "g.db"))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+
+    a = templates.template_hash(cfg, "startup")
+    b = templates.template_hash(cfg, "frontier-lab")
+    for camp, h in (("startup", a), ("frontier-lab", b)):
+        conn.execute("INSERT INTO test_sends (mailbox_id, step_id, campaign,"
+                     " template_hash, to_addr, ok, sent_at)"
+                     " VALUES ('gmail-smtp','step1_initial',?,?,'me@test',1,'')",
+                     (camp, h))
+    conn.commit()
+
+    # startup was proven first and frontier-lab most recently; both hold.
+    for camp in ("startup", "frontier-lab"):
+        problems = send_queue.gate(conn, cfg, camp, "gmail-smtp")
+        assert not [p for p in problems if "test send" in p], (camp, problems)
+
+
+def test_an_untested_template_is_still_refused(tmp_path, monkeypatch):
+    """Relaxing 'newest' must not relax 'proven at all'."""
+    from pathlib import Path
+
+    from scripts import send_queue
+    from scripts.config import Config
+    from scripts.db import open_db
+
+    conn = open_db(str(tmp_path / "g2.db"))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    conn.execute("INSERT INTO test_sends (mailbox_id, step_id, campaign,"
+                 " template_hash, to_addr, ok, sent_at)"
+                 " VALUES ('gmail-smtp','step1_initial','startup','stale','me@test',1,'')")
+    conn.commit()
+
+    problems = send_queue.gate(conn, cfg, "startup", "gmail-smtp")
+    assert any("have changed since they last passed a test send" in p for p in problems)

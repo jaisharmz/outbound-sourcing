@@ -65,6 +65,16 @@ class MailboxProvider(abc.ABC):
         return SendResult(ok=False, retryable=False,
                           error=f"provider {type(self).__name__} cannot create drafts")
 
+    def delete_draft(self, message_id: str) -> tuple[bool, str]:
+        """Remove a draft this provider wrote, named by its Message-ID.
+
+        The counterpart of `create_draft`, and required by the send path rather
+        than a convenience: once a queued draft has actually been sent, the copy
+        sitting in the operator's Drafts folder is a duplicate waiting for
+        someone to click send on it.
+        """
+        return False, f"provider {type(self).__name__} cannot delete drafts"
+
     @abc.abstractmethod
     def list_replies(self, thread_ids: list[str], since: datetime | None = None) -> list[IncomingReply]: ...
 
