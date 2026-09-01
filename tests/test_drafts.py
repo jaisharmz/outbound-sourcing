@@ -681,3 +681,101 @@ def test_an_untested_template_is_still_refused(tmp_path, monkeypatch):
 
     problems = send_queue.gate(conn, cfg, "startup", "gmail-smtp")
     assert any("have changed since they last passed a test send" in p for p in problems)
+
+
+class _FakeIMAP:
+    """An IMAP server in the shape of Gmail's.
+
+    `honours` decides what actually removes a message from the folder. Gmail
+    answers OK to `\\Deleted` and EXPUNGE and then keeps the message, which is
+    the whole reason delete_draft verifies instead of trusting the response.
+    """
+
+    def __init__(self, uids, honours="move"):
+        self.folder = None
+        self.uids = dict(uids)          # uid -> Message-ID
+        self.honours = honours
+        self.trashed = []
+
+    def select(self, folder, readonly=False):
+        self.folder = folder
+        return "OK", [str(len(self.uids)).encode()]
+
+    def expunge(self):
+        if self.honours == "expunge":
+            for uid in [u for u in self.uids if u in self._flagged]:
+                self.trashed.append(self.uids.pop(uid))
+        return "OK", [None]
+
+    _flagged: set = set()
+
+    def uid(self, command, *args):
+        command = command.upper()
+        if command == "SEARCH":
+            wanted = args[-1].strip('"')
+            hits = [u for u, m in self.uids.items() if m == wanted]
+            return "OK", [b" ".join(hits) if hits else b""]
+        if command == "MOVE":
+            uid = args[0]
+            if self.honours != "move":
+                return "NO", [b"MOVE not supported"]
+            self.trashed.append(self.uids.pop(uid))
+            return "OK", [None]
+        if command == "COPY":
+            return "OK", [None]
+        if command == "STORE":
+            self._flagged = self._flagged | {args[0]}
+            return "OK", [None]
+        return "OK", [None]
+
+    def logout(self):
+        return "BYE", [None]
+
+
+def _smtp_provider(monkeypatch, fake):
+    from pathlib import Path
+
+    from scripts.config import Config
+    from scripts.providers.smtp import SMTPMailbox
+
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    p = SMTPMailbox(cfg.mailboxes.get("gmail-smtp"), {})
+    monkeypatch.setattr(p, "_imap", lambda *a, **k: fake)
+    return p
+
+
+def test_a_draft_is_deleted_by_moving_it_to_trash(monkeypatch):
+    """Gmail only honours EXPUNGE in Trash. Everywhere else, deleting is a move."""
+    fake = _FakeIMAP({b"1": "<a@test>", b"2": "<b@test>"}, honours="move")
+    p = _smtp_provider(monkeypatch, fake)
+
+    assert p.delete_draft("<a@test>") == (True, "draft deleted (1)")
+    assert fake.trashed == ["<a@test>"], "recoverable in Trash, not expunged forever"
+    assert list(fake.uids.values()) == ["<b@test>"]
+    assert p.delete_draft("<a@test>") == (True, "draft already gone")
+
+
+def test_a_server_that_says_ok_and_keeps_the_draft_is_not_believed(monkeypatch):
+    """The failure this exists for: Gmail returned OK to STORE and to EXPUNGE,
+    left `\\Deleted` visibly set, and kept all ten messages. Ten drafts were
+    reported deleted and every one was still in the folder -- which, on the
+    send path, means ten emails sitting there to be sent a second time by hand.
+    Trusting the server's OK is what made that silent.
+    """
+    fake = _FakeIMAP({b"1": "<a@test>"}, honours="nothing")
+    p = _smtp_provider(monkeypatch, fake)
+
+    ok, detail = p.delete_draft("<a@test>")
+    assert ok is False
+    assert "still in" in detail
+    assert list(fake.uids.values()) == ["<a@test>"]
+
+
+def test_a_server_without_move_falls_back_to_copy_and_expunge(monkeypatch):
+    """RFC 6851 is an extension; the pre-MOVE spelling has to still work."""
+    fake = _FakeIMAP({b"1": "<a@test>"}, honours="expunge")
+    p = _smtp_provider(monkeypatch, fake)
+
+    ok, detail = p.delete_draft("<a@test>")
+    assert ok is True, detail
+    assert fake.trashed == ["<a@test>"]

@@ -189,22 +189,50 @@ class SMTPMailbox(MailboxProvider):
         person under the same subject are exactly the case that matters here,
         and only the Message-ID tells them apart. A draft the operator already
         deleted is not an error -- the desired end state is that it is gone.
+
+        Deletion is a MOVE to Trash, not the RFC 3501 `\\Deleted` + EXPUNGE.
+        Gmail accepts that pair, answers OK to both, leaves the flag visibly
+        set -- and keeps the message. Ten drafts were reported deleted and all
+        ten were still in the folder afterwards. In Gmail, EXPUNGE only removes
+        from Trash; everywhere else deleting means moving there.
+
+        The result is confirmed by re-searching rather than by trusting the
+        server's OK, because that OK is exactly what lied.
         """
         if not message_id:
             return False, "no Message-ID recorded for this draft"
         folder = self.mailbox.drafts_folder or "[Gmail]/Drafts"
+        trash = self.mailbox.trash_folder or "[Gmail]/Trash"
         try:
             conn = self._imap()
             try:
                 conn.select(f'"{folder}"', readonly=False)
-                typ, data = conn.uid("SEARCH", None, "HEADER", "Message-ID",
-                                     _imap_quote(message_id))
-                uids = data[0].split() if data and data[0] else []
+
+                def find() -> list[bytes]:
+                    typ, data = conn.uid("SEARCH", None, "HEADER", "Message-ID",
+                                         _imap_quote(message_id))
+                    return data[0].split() if typ == "OK" and data and data[0] else []
+
+                uids = find()
                 if not uids:
                     return True, "draft already gone"
+                detail = ""
                 for uid in uids:
-                    conn.uid("STORE", uid, "+FLAGS", "\\Deleted")
-                conn.expunge()
+                    typ, data = conn.uid("MOVE", uid, f'"{trash}"')
+                    if typ != "OK":
+                        # Servers without RFC 6851. COPY then expunge the
+                        # original, which is the pre-MOVE way to say the same
+                        # thing and which Gmail does honour once a copy exists.
+                        detail = f"MOVE refused ({data}); fell back to COPY"
+                        conn.uid("COPY", uid, f'"{trash}"')
+                        conn.uid("STORE", uid, "+FLAGS", "\\Deleted")
+                        conn.expunge()
+                # Re-read. Anything less is how the previous version came to
+                # report ten deletions that had not happened.
+                left = find()
+                if left:
+                    return False, (f"still in {folder} after delete "
+                                   f"({len(left)} copy/copies){'; ' + detail if detail else ''}")
                 return True, f"draft deleted ({len(uids)})"
             finally:
                 try:

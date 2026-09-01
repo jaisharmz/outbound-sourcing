@@ -318,6 +318,10 @@ class Mailbox(Strict):
     # Where create_draft APPENDs. Gmail localises this folder, so a non-English
     # account needs it set explicitly or the APPEND fails with "no such mailbox".
     drafts_folder: str = "[Gmail]/Drafts"
+    # Where a withdrawn draft is moved. Gmail only honours EXPUNGE in Trash, so
+    # deleting anywhere else means moving here -- and it is localised the same
+    # way drafts_folder is.
+    trash_folder: str = "[Gmail]/Trash"
     username: str | None = None
 
     @property
