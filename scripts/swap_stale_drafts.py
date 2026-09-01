@@ -17,8 +17,24 @@ operator's own unrelated drafts live in this folder too.
 from __future__ import annotations
 
 import email
+import re
 from collections import Counter
 from dataclasses import dataclass, field
+
+BATCH = 50
+
+_UID_RE = re.compile(rb"\bUID (\d+)")
+
+
+def _uid_of(prefix: bytes) -> bytes | None:
+    """The UID out of a FETCH response line like `12 (UID 3456 RFC822 {8}`.
+
+    Batched responses arrive in no guaranteed order, so the identity has to
+    come from the response itself. UIDs rather than sequence numbers because a
+    sequence number means something different the moment anything is expunged.
+    """
+    m = _UID_RE.search(prefix or b"")
+    return m.group(1) if m else None
 
 
 @dataclass
@@ -52,19 +68,27 @@ def swap(provider, *, new_marker: str, old_marker: str,
 
         stale: dict[str, list[bytes]] = {}
         fresh: Counter = Counter()
-        for uid in uids:
-            typ, md = conn.fetch(uid, "(RFC822)")
-            if not md or not md[0]:
-                continue
-            msg = email.message_from_bytes(md[0][1])
-            to = (msg.get("To") or "").strip().lower()
-            body = _html_body(msg)
-            if new_marker in body:
-                fresh[to] += 1
-            elif old_marker in body:
-                stale.setdefault(to, []).append(uid)
-            else:
-                report.unrecognised += 1
+        # Fetched in batches. One round trip per draft crossed Gmail's patience
+        # at ~350 messages: the read timed out mid-scan and the run exited
+        # having deleted nothing, twice. The response is unordered, so the UID
+        # is read back out of each item rather than zipped against the request.
+        for i in range(0, len(uids), BATCH):
+            typ, md = conn.fetch(b",".join(uids[i:i + BATCH]), "(UID RFC822)")
+            for item in md or []:
+                if not isinstance(item, tuple):
+                    continue
+                uid = _uid_of(item[0])
+                if uid is None:
+                    continue
+                msg = email.message_from_bytes(item[1])
+                to = (msg.get("To") or "").strip().lower()
+                body = _html_body(msg)
+                if new_marker in body:
+                    fresh[to] += 1
+                elif old_marker in body:
+                    stale.setdefault(to, []).append(uid)
+                else:
+                    report.unrecognised += 1
 
         report.corrected = sum(fresh.values())
         report.stale = sum(len(v) for v in stale.values())
@@ -74,7 +98,7 @@ def swap(provider, *, new_marker: str, old_marker: str,
 
         if apply and report.deletable:
             for _to, uid in report.deletable:
-                conn.store(uid, "+FLAGS", "\\Deleted")
+                conn.uid("STORE", uid, "+FLAGS", "\\Deleted")
             conn.expunge()
             report.deleted = len(report.deletable)
     finally:

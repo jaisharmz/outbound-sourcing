@@ -88,8 +88,15 @@ def find_sent(provider, drafts: list[sqlite3.Row]) -> tuple[set[int], str, str]:
     return matched, folder_used, ""
 
 
+def default_bounce_since(days: int = 14) -> str:
+    """IMAP date `days` back. A literal date would rot into a full-folder scan."""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%d-%b-%Y")
+
+
 def reconcile(conn: sqlite3.Connection, config, provider,
-              bounce_since: str = "01-Aug-2026", bounce_scan=None) -> Reconciled:
+              bounce_since: str | None = None, bounce_scan=None) -> Reconciled:
     """Mark as sent every draft that has since left. Safe to run repeatedly.
 
     `bounce_scan` is injectable so tests can drive the withholding path without
@@ -106,7 +113,7 @@ def reconcile(conn: sqlite3.Connection, config, provider,
         from . import bounces as B
         bounce_scan = B.scan
 
-    report = bounce_scan(provider, since=bounce_since)
+    report = bounce_scan(provider, since=bounce_since or default_bounce_since())
     if report.error:
         # Unverifiable is not the same as clean. Refuse to mark anything rather
         # than repeat the false positive this check exists to prevent.

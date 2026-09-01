@@ -71,10 +71,16 @@ def _addrs(value: str) -> list[str]:
     return [a[1].lower() for a in email.utils.getaddresses([value or ""]) if a[1]]
 
 
-def _index_sent(imap) -> tuple[dict[str, dict], str]:
-    """Message-ID -> {to, subject, date} for everything in the Sent folder.
+def _index_sent(imap, since: str) -> tuple[dict[str, dict], str]:
+    """Message-ID -> {to, subject, date} for the Sent folder since `since`.
 
     The join key for limit bounces. Without it they are anonymous.
+
+    Bounded by the same date as the bounce search, not the whole folder: this
+    runs on every `send`, and a full index of a mailbox with thousands of sent
+    messages turned a routine reconcile into minutes of IMAP. A bounce can only
+    reply to something sent before it, so anything older than the oldest bounce
+    considered cannot be a join target.
     """
     index: dict[str, dict] = {}
     folder_used = ""
@@ -83,7 +89,7 @@ def _index_sent(imap) -> tuple[dict[str, dict], str]:
         if status != "OK":
             continue
         folder_used = folder
-        typ, data = imap.search(None, "ALL")
+        typ, data = imap.search(None, "SINCE", since)
         uids = data[0].split() if data and data[0] else []
         for i in range(0, len(uids), 200):
             chunk = b",".join(uids[i:i + 200])
@@ -136,7 +142,7 @@ def scan(provider, *, since: str, ours: set[str] | None = None) -> BounceReport:
         return report
 
     try:
-        sent_index, _ = _index_sent(imap)
+        sent_index, _ = _index_sent(imap, since)
 
         status, _ = imap.select("INBOX", readonly=True)
         if status != "OK":
