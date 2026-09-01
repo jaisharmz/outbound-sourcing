@@ -273,6 +273,13 @@ def test_sent_detection_needs_both_recipient_and_subject():
     assert "readonly=True" in src, "reconciliation must never mutate the mailbox"
 
 
+def _no_bounces(provider, since):
+    """A clean mailbox: nothing Gmail accepted came back."""
+    from scripts.bounces import BounceReport
+
+    return BounceReport()
+
+
 def test_reconcile_marks_only_what_it_matched(tmp_path, monkeypatch):
     from pathlib import Path
 
@@ -298,7 +305,7 @@ def test_reconcile_marks_only_what_it_matched(tmp_path, monkeypatch):
     monkeypatch.setattr(reconcile, "find_sent",
                         lambda provider, drafts: ({1}, "Sent", ""))
     cfg = Config(Path(__file__).resolve().parent.parent / "config")
-    result = reconcile.reconcile(conn, cfg, object())
+    result = reconcile.reconcile(conn, cfg, object(), bounce_scan=_no_bounces)
 
     assert [addr for _i, addr in result.marked] == ["gone@acme.test"]
     states = dict(conn.execute("SELECT to_addr, state FROM messages"))
@@ -320,3 +327,125 @@ def test_a_failed_sent_check_does_not_mark_anything(tmp_path, monkeypatch):
     cfg = Config(Path(__file__).resolve().parent.parent / "config")
     result = reconcile.reconcile(conn, cfg, object())
     assert result.marked == [] and result.error == "ConnectionError"
+
+
+def _bounced(*addrs):
+    """A mailbox where Gmail filed a Sent copy and then bounced it back."""
+    from scripts.bounces import Bounce, BounceReport
+
+    def scan(provider, since):
+        return BounceReport(limit=[Bounce(kind="limit", to_addr=a) for a in addrs])
+    return scan
+
+
+def _two_drafts(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from scripts.db import open_db
+
+    monkeypatch.setenv("OUTBOUND_DB", str(tmp_path / "t.db"))
+    conn = open_db(tmp_path / "t.db")
+    conn.execute("INSERT INTO accounts (id, name, name_normalized, source, status,"
+                 " created_at, updated_at) VALUES (1,'Acme','acme','t','active','','')")
+    for i, addr in enumerate(("gone@acme.test", "bounced@acme.test"), start=1):
+        conn.execute("INSERT INTO contacts (id, account_id, name, first_name, last_name,"
+                     " title, email, email_domain, email_basis, confidence,"
+                     " created_at, updated_at) VALUES (?,1,?,?,'X','R',?,'acme.test',"
+                     "'observed',0.9,'','')", (i, f"P{i}", f"P{i}", addr))
+        conn.execute("INSERT INTO messages (id, contact_id, step_id, mailbox_id, state,"
+                     " to_addr, subject, recipient_count)"
+                     " VALUES (?,?,'s','m','drafted',?,'Subject A',1)", (i, i, addr))
+    conn.commit()
+    return conn
+
+
+def test_a_sent_copy_that_bounced_is_not_a_send(tmp_path, monkeypatch):
+    """Over its limit, Gmail writes a Sent copy and *then* refuses to deliver.
+
+    Both messages are in Sent. Only one actually reached anyone. Marking the
+    other 'sent' would exclude that contact from every future run for good --
+    which is exactly what happened to 96 people on 2026-08-31/09-01.
+    """
+    from pathlib import Path
+
+    from scripts import reconcile
+    from scripts.config import Config
+
+    conn = _two_drafts(tmp_path, monkeypatch)
+    monkeypatch.setattr(reconcile, "find_sent",
+                        lambda provider, drafts: ({1, 2}, "Sent", ""))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    result = reconcile.reconcile(conn, cfg, object(),
+                                 bounce_scan=_bounced("bounced@acme.test"))
+
+    assert [addr for _i, addr in result.marked] == ["gone@acme.test"]
+    assert result.withheld == 1
+    states = dict(conn.execute("SELECT to_addr, state FROM messages"))
+    assert states["gone@acme.test"] == "sent"
+    assert states["bounced@acme.test"] == "drafted"
+
+
+def test_an_unreadable_inbox_marks_nothing(tmp_path, monkeypatch):
+    """Unverifiable is not clean. Fail closed rather than re-run the bug."""
+    from pathlib import Path
+
+    from scripts import reconcile
+    from scripts.bounces import BounceReport
+    from scripts.config import Config
+
+    conn = _two_drafts(tmp_path, monkeypatch)
+    monkeypatch.setattr(reconcile, "find_sent",
+                        lambda provider, drafts: ({1, 2}, "Sent", ""))
+    cfg = Config(Path(__file__).resolve().parent.parent / "config")
+    result = reconcile.reconcile(
+        conn, cfg, object(),
+        bounce_scan=lambda provider, since: BounceReport(error="ConnectionError"))
+
+    assert result.marked == []
+    assert "bounce scan failed" in result.error
+    states = dict(conn.execute("SELECT to_addr, state FROM messages"))
+    assert set(states.values()) == {"drafted"}
+
+
+def test_clear_deletes_rows_so_the_contact_can_be_drafted_again(tmp_path, monkeypatch):
+    """A surviving row of any state blocks the re-draft: idempotency_key is UNIQUE."""
+    from scripts import bounces as B
+
+    conn = _two_drafts(tmp_path, monkeypatch)
+    conn.execute("UPDATE messages SET state='sent' WHERE to_addr='bounced@acme.test'")
+    conn.commit()
+
+    report = B.scan.__wrapped__ if hasattr(B.scan, "__wrapped__") else None
+    rep = _bounced("bounced@acme.test")(object(), "01-Aug-2026")
+    rows = B.undelivered_rows(conn, rep)
+    assert [addr for _i, addr in rows] == ["bounced@acme.test"]
+
+    assert B.clear(conn, rows) == 1
+    left = dict(conn.execute("SELECT to_addr, state FROM messages"))
+    assert "bounced@acme.test" not in left
+    assert left["gone@acme.test"] == "drafted"
+
+
+def test_only_sent_rows_are_candidates_for_clearing(tmp_path, monkeypatch):
+    """A draft that bounced is still a draft; deleting it would lose the copy."""
+    from scripts import bounces as B
+
+    conn = _two_drafts(tmp_path, monkeypatch)  # both left 'drafted'
+    rep = _bounced("bounced@acme.test")(object(), "01-Aug-2026")
+    assert B.undelivered_rows(conn, rep) == []
+
+
+def test_our_own_cc_addresses_are_not_counted_as_failed_prospects():
+    """A DSN names all three recipients; two of them are us."""
+    import email as _email
+
+    from scripts import bounces as B
+
+    raw = (
+        "From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>\r\n"
+        "Subject: Delivery Status Notification (Failure)\r\n"
+        "X-Failed-Recipients: dead@acme.test, jais@berkeley.edu\r\n"
+        "\r\n"
+        "failed\r\n")
+    msg = _email.message_from_string(raw)
+    assert set(B._failed_recipients(msg)) == {"dead@acme.test", "jais@berkeley.edu"}

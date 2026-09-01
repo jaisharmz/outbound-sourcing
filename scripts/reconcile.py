@@ -15,6 +15,13 @@ That match is deliberately narrow. A false positive marks someone contacted who
 was not, which suppresses them and stops the follow-up; a false negative just
 means the operator's next run reconciles it. So both the address and the exact
 subject must match, and only messages in Sent count.
+
+Presence in Sent is necessary but not sufficient. Over its sending limit, Gmail
+accepts the message, writes the Sent copy, and only then bounces it back with
+"You have reached a limit for sending mail" -- so the copy exists for a message
+nobody received. On 2026-08-31/09-01 that marked 96 contacts permanently
+contacted who had not been. `scripts.bounces` finds those, and anything it
+reports is withheld here.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ class Reconciled:
     scanned: int = 0
     folder: str = ""
     error: str = ""
+    withheld: int = 0                    # in Sent, but bounced back undelivered
 
 
 def _drafted(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -80,13 +88,39 @@ def find_sent(provider, drafts: list[sqlite3.Row]) -> tuple[set[int], str, str]:
     return matched, folder_used, ""
 
 
-def reconcile(conn: sqlite3.Connection, config, provider) -> Reconciled:
-    """Mark as sent every draft that has since left. Safe to run repeatedly."""
+def reconcile(conn: sqlite3.Connection, config, provider,
+              bounce_since: str = "01-Aug-2026", bounce_scan=None) -> Reconciled:
+    """Mark as sent every draft that has since left. Safe to run repeatedly.
+
+    `bounce_scan` is injectable so tests can drive the withholding path without
+    a mailbox; it defaults to the real IMAP scan.
+    """
     drafts = _drafted(conn)
     matched, folder, error = find_sent(provider, drafts)
     out = Reconciled(marked=[], scanned=len(drafts), folder=folder, error=error)
     if not matched:
         return out
+
+    # A Sent copy that came straight back is not a send. Withhold those.
+    if bounce_scan is None:
+        from . import bounces as B
+        bounce_scan = B.scan
+
+    report = bounce_scan(provider, since=bounce_since)
+    if report.error:
+        # Unverifiable is not the same as clean. Refuse to mark anything rather
+        # than repeat the false positive this check exists to prevent.
+        out.error = out.error or f"bounce scan failed, marked nothing: {report.error}"
+        return out
+    bounced = {b.to_addr for b in report.limit}
+    if bounced:
+        withheld = {r["id"] for r in drafts
+                    if r["id"] in matched and r["to_addr"].lower() in bounced}
+        matched -= withheld
+        out.withheld = len(withheld)
+        log_event(conn, "info", "reconcile.bounce_withheld", count=len(withheld))
+        if not matched:
+            return out
 
     from . import claims as C
 

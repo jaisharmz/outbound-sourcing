@@ -1867,6 +1867,65 @@ def swap_stale_drafts_cmd(
         typer.secho(f"\ndeleted {rep.deleted} stale draft(s).", fg=typer.colors.GREEN)
 
 
+@app.command("reconcile-bounces")
+def reconcile_bounces_cmd(
+    since: str = typer.Option("01-Aug-2026", "--since",
+        help="IMAP date, e.g. 20-Aug-2026"),
+    mailbox: str = typer.Option("gmail-smtp", "--mailbox"),
+    apply: bool = typer.Option(False, "--apply",
+        help="actually clear the falsely-sent rows"),
+    db: Optional[str] = typer.Option(None, "--db"),
+    config_path: Optional[str] = typer.Option(None, "--config"),
+):
+    """Undo 'sent' for messages Gmail filed in Sent but bounced back undelivered.
+
+    Over its sending limit Gmail accepts the message, writes the Sent copy, then
+    returns it with "You have reached a limit for sending mail". Reconcile sees
+    the copy and marks the contact permanently contacted, so they are never
+    drafted again -- a silent, unrecoverable drop. This finds them and puts them
+    back in the queue. Addresses that bounced for real (no such user) are
+    reported but left alone: those sends did happen.
+    """
+    from . import bounces as B
+
+    cfg = _config(config_path)
+    provider = providers.build(cfg.mailboxes.get(mailbox), cfg.secrets())
+    conn = open_db(db)
+
+    ours = {cfg.mailboxes.get(mailbox).from_.address}
+    if cfg.mailboxes.get(mailbox).reply_to:
+        ours.add(cfg.mailboxes.get(mailbox).reply_to)
+    ours |= set(getattr(cfg, "cc", None).default.cc if getattr(cfg, "cc", None) else [])
+
+    rep = B.scan(provider, since=since, ours=ours)
+    if rep.error:
+        typer.secho(f"bounce scan failed: {rep.error}", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    perm = {b.to_addr for b in rep.permanent}
+    typer.echo(f"{rep.scanned} bounce notice(s) since {since}\n")
+    typer.echo(f"  sending-limit (never delivered) : {len(rep.limit)}")
+    typer.echo(f"  permanent failure (real send)   : {len(perm)} address(es)")
+    if rep.unjoined:
+        typer.secho(f"  unattributable                  : {rep.unjoined}"
+                    "   (no Sent copy to join through)", fg=typer.colors.YELLOW)
+
+    rows = B.undelivered_rows(conn, rep)
+    typer.echo(f"\nmarked 'sent' in the DB but never delivered: {len(rows)}")
+    for _mid, to in rows[:15]:
+        typer.echo(f"    {to}")
+    if len(rows) > 15:
+        typer.echo(f"    ... and {len(rows) - 15} more")
+
+    if not apply:
+        typer.secho("\ndry run -- nothing changed. Re-run with --apply.",
+                    fg=typer.colors.YELLOW)
+        return
+    n = B.clear(conn, rows)
+    typer.secho(f"\ncleared {n} row(s); those contacts can be drafted again.",
+                fg=typer.colors.GREEN)
+
+
 @app.command("drafts")
 def drafts_cmd(
     campaign: Optional[str] = typer.Option(None, "--campaign"),
