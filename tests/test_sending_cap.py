@@ -110,3 +110,60 @@ def test_a_recipient_budget_is_not_a_message_budget():
     assert cc.max_recipients_per_message() == 4
 
     assert CCConfig().max_recipients_per_message() == 1
+
+
+def test_a_draft_is_deleted_through_the_mailbox_that_holds_it(monkeypatch, tmp_path):
+    """Two senders, one drafts folder.
+
+    Nearly the whole queue was drafted from gmail-smtp. When a second mailbox
+    starts sending those contacts, the delete has to go back to gmail-smtp. Sent
+    through the new sender it searches the wrong folder, finds nothing, and
+    leaves the draft sitting where the operator clicks -- a second copy to
+    someone who has already been written to, which is the exact failure the
+    delete exists to prevent."""
+    from scripts import send_queue
+    from tests.test_drafts import _Recorder, _fixture
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    drafter = _Recorder()
+    sender = _Recorder()
+
+    # Drafted by the mailbox that owns the folder.
+    send_queue.send_one(conn, config, drafter, mailbox, row, "startup", 1,
+                        dry_run=False, mode="draft")
+
+    # A different mailbox sends it. Give it a distinct id and make the config
+    # hand back the drafting mailbox's provider for that id.
+    other = mailbox.model_copy(update={"id": "berkeley-smtp"})
+    send_queue._DRAFT_PROVIDERS.clear()
+    monkeypatch.setattr(send_queue.providers, "build", lambda mb, sec: drafter)
+
+    outcome, detail = send_queue.send_one(conn, config, sender, other, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "done", detail
+    assert sender.calls == ["send"], "the new mailbox sends"
+    assert drafter.deleted == ["<draft-1@test>"], "the old mailbox deletes its own draft"
+    assert sender.deleted == [], "the sender must not be asked for a draft it never held"
+    send_queue._DRAFT_PROVIDERS.clear()
+
+
+def test_an_unknown_draft_mailbox_falls_back_to_the_sender(monkeypatch, tmp_path):
+    """A mailbox dropped from config must not raise after the message is gone.
+    Degrading to the old behaviour costs a stranded draft, which is reported;
+    raising here loses the send record for mail that already left."""
+    from scripts import send_queue
+    from tests.test_drafts import _Recorder, _fixture
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="draft")
+    conn.execute("UPDATE messages SET mailbox_id='deleted-mailbox'")
+    conn.commit()
+
+    send_queue._DRAFT_PROVIDERS.clear()
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=False, mode="send")
+    assert outcome == "done", detail
+    assert provider.deleted == ["<draft-1@test>"]
+    send_queue._DRAFT_PROVIDERS.clear()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import os
 import time
 import smtplib
 import ssl
@@ -61,10 +62,14 @@ class SMTPMailbox(MailboxProvider):
                 f"mailbox {self.mailbox.id!r} has no auth_ref naming the secrets.env key "
                 f"that holds its password"
             )
-        pw = self.secrets.get(key)
+        # Environment second, so a credential can live in a managed secret store
+        # and be injected for the run rather than sitting in plaintext on disk.
+        # secrets.env still wins when both are set: it is the explicit one.
+        pw = self.secrets.get(key) or os.environ.get(key)
         if not pw:
             raise RuntimeError(
-                f"mailbox {self.mailbox.id!r}: {key} is not set in config/secrets.env.\n"
+                f"mailbox {self.mailbox.id!r}: {key} is set neither in config/secrets.env\n"
+                f"  nor in the environment.\n"
                 f"  For Gmail this is an App Password, not the account password. Enable\n"
                 f"  2-Step Verification, then create one at myaccount.google.com/apppasswords."
             )

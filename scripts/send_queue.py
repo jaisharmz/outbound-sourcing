@@ -149,6 +149,28 @@ def due(conn, campaign_id: int, limit: int, campaign: str | None = None) -> list
          ORDER BY c.confidence DESC LIMIT ?""", (campaign, campaign, limit)).fetchall()
 
 
+_DRAFT_PROVIDERS: dict[str, object] = {}
+
+
+def _draft_provider(config: Config, mailbox, provider, draft_mailbox: str | None):
+    """The provider that owns a draft, which is not always the one sending.
+
+    Cached because a batch of 17 would otherwise open 17 IMAP connections to the
+    same mailbox. Falls back to the sending provider when the draft's mailbox is
+    unknown or no longer in config, so a missing entry degrades to today's
+    behaviour rather than raising mid-send with the message already delivered.
+    """
+    if not draft_mailbox or draft_mailbox == mailbox.id:
+        return provider
+    if draft_mailbox not in _DRAFT_PROVIDERS:
+        try:
+            _DRAFT_PROVIDERS[draft_mailbox] = providers.build(
+                config.mailboxes.get(draft_mailbox), config.secrets())
+        except Exception:
+            return provider
+    return _DRAFT_PROVIDERS[draft_mailbox]
+
+
 def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
              campaign_id: int, dry_run: bool, mode: str = "draft") -> tuple[str, str]:
     """Draft or send one message.
@@ -210,7 +232,7 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
             # reading as unsent work addressed to someone already written to.
             # Read before the promote below, so the promoted row is in the list.
             superseded = conn.execute(
-                "SELECT id, provider_message_id FROM messages"
+                "SELECT id, provider_message_id, mailbox_id FROM messages"
                 " WHERE contact_id=? AND step_id=? AND state='drafted'",
                 (row["id"], step.id)).fetchall()
         cur = conn.execute(
@@ -274,8 +296,14 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
     # reconcile can see and explain, whereas deleting first and dying would
     # destroy the only copy of something that never went out.
     stranded = []
-    for mid, provider_message_id in superseded:
-        gone, detail = provider.delete_draft(provider_message_id)
+    for mid, provider_message_id, draft_mailbox in superseded:
+        # A draft lives in the mailbox that wrote it, which is not always the one
+        # sending. Once a second mailbox joins the rotation, most of the queue's
+        # drafts sit in the first one; deleting them through the sender searches
+        # the wrong folder, finds nothing, and leaves the draft exactly where the
+        # operator will click it -- a duplicate to someone already written to.
+        owner = _draft_provider(config, mailbox, provider, draft_mailbox)
+        gone, detail = owner.delete_draft(provider_message_id)
         if gone:
             # 'sent' for the row that was just delivered, 'cancelled' for the
             # superseded copies. The guard on 'drafted' is what keeps the
