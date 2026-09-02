@@ -1751,6 +1751,9 @@ def send_cmd(
     send: bool = typer.Option(False, "--send",
                               help="actually send. Default writes Gmail drafts."),
     ignore_window: bool = typer.Option(False, "--ignore-window"),
+    no_reconcile: bool = typer.Option(
+        False, "--no-reconcile",
+        help="skip the Sent-folder scan; only safe if something else just ran it"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
 ):
@@ -1773,6 +1776,8 @@ def send_cmd(
         argv.append("--send")
     if ignore_window:
         argv.append("--ignore-window")
+    if no_reconcile:
+        argv.append("--no-reconcile")
     raise typer.Exit(send_main(argv))
 
 

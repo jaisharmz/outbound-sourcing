@@ -354,6 +354,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="actually send. Default is to write Gmail drafts.")
     ap.add_argument("--ignore-window", action="store_true",
                     help="skip the day/time window check; caps and gates still apply")
+    ap.add_argument("--no-reconcile", action="store_true",
+                    help="skip the Sent-folder scan. Only safe when another run in the "
+                         "same slice has already done it.")
     ap.add_argument("--config"); ap.add_argument("--db")
     args = ap.parse_args(argv)
     mode = "send" if args.send else "draft"
@@ -406,7 +409,14 @@ def main(argv: list[str] | None = None) -> int:
     # Notice what has already gone before deciding what to queue. Without this
     # the operator has to announce each send, and skipping that silently
     # re-queues people who were already written to.
-    if not args.dry_run:
+    #
+    # It is also the most expensive thing here -- it scans Gmail folders, and on
+    # 2026-09-02 one pass took 19 minutes against a mailbox this size. An hourly
+    # slice that runs it once per campaign spends most of its watchdog budget
+    # before the first send, which is how runs were dying with 1 of 10 sent.
+    # Once per slice is enough: nothing between two campaigns in the same run
+    # changes what is sitting in the Sent folder.
+    if not args.dry_run and not args.no_reconcile:
         from .reconcile import reconcile
 
         try:
