@@ -14,7 +14,7 @@ import argparse
 import random
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 from .cc import resolve as resolve_cc
 from .config import Config, load_config
@@ -38,10 +38,34 @@ def window_open(config: Config, now: datetime | None = None) -> tuple[bool, str]
     return True, "open"
 
 
-def sent_today(conn, mailbox_id: str) -> int:
-    return conn.execute(
-        "SELECT COALESCE(SUM(recipients),0) FROM mailbox_day WHERE mailbox_id=? AND day=?",
-        (mailbox_id, utcnow()[:10])).fetchone()[0]
+CAP_WINDOW_HOURS = 24
+
+
+def sent_in_window(conn, mailbox_id: str, hours: int = CAP_WINDOW_HOURS) -> int:
+    """Recipients this mailbox actually put on the wire in the trailing `hours`.
+
+    Gmail's limit is a rolling 24h, not a calendar day, and the two only agree
+    while sending happens in one contiguous block at the same hour each day.
+    The old count summed `mailbox_day` for the current *UTC* date, which rolls
+    over at 17:00 PT -- mid-afternoon here. That was safe only by accident of
+    the 08:00-16:00 window sitting inside one UTC date. Widen the window past
+    17:00 and the budget resets mid-evening, handing out a second full day's
+    allowance a few hours after the first: ~800 recipients inside 13 hours,
+    against a ceiling measured at ~600 on 2026-08-31.
+
+    Counted from `messages` rather than `mailbox_day` because a rolling window
+    needs per-send timestamps, not daily totals. Test sends count too: they are
+    real mail and Gmail bills them like any other.
+    """
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    sent = conn.execute(
+        "SELECT COALESCE(SUM(recipient_count),0) FROM messages"
+        " WHERE mailbox_id=? AND state='sent' AND sent_at > ?",
+        (mailbox_id, since)).fetchone()[0]
+    tests = conn.execute(
+        "SELECT COUNT(*) FROM test_sends WHERE mailbox_id=? AND ok=1 AND sent_at > ?",
+        (mailbox_id, since)).fetchone()[0]
+    return sent + tests
 
 
 def gate(conn, config: Config, campaign: str, mailbox_id: str) -> list[str]:
@@ -324,18 +348,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {p.splitlines()[0]}", file=sys.stderr)
         return 1
 
-    # The window and the daily cap govern what leaves the mailbox. A draft does
+    # The window and the rolling cap govern what leaves the mailbox. A draft does
     # not leave, so neither applies -- and applying them would stop the operator
     # preparing tomorrow's batch tonight, which is the point of drafting.
     cap = config.campaign.daily_cap
-    already = sent_today(conn, mailbox.id)
+    already = sent_in_window(conn, mailbox.id)
     room = max(0, cap - already)
     if mode == "send":
         ok, why = window_open(config)
         if not ok and not args.ignore_window and not args.dry_run:
             print(f"outside the sending window: {why}"); return 0
         if room == 0 and not args.dry_run:
-            print(f"daily cap reached: {already}/{cap} recipients today"); return 0
+            print(f"cap reached: {already}/{cap} recipients in the last "
+                  f"{CAP_WINDOW_HOURS}h"); return 0
+        # `room` is recipients; `due` takes contacts. Every message here carries
+        # the CCs, so divide by the widest a message can be rather than sending
+        # 17 three-recipient messages into 30 recipients of headroom.
+        room = max(1, room // max(1, config.cc.max_recipients_per_message()))
     else:
         room = args.limit
 
@@ -373,11 +402,20 @@ def main(argv: list[str] | None = None) -> int:
 
     verb = "to draft" if mode == "draft" else "to send"
     print(f"{'DRY RUN: ' if args.dry_run else ''}{len(rows)} {verb} from {mailbox.id}"
-          f"{'' if mode == 'draft' else f' ({already}/{cap} recipients used today)'}\n")
+          f"{'' if mode == 'draft' else f' ({already}/{cap} recipients in the last {CAP_WINDOW_HOURS}h)'}\n")
     done = failed = held = 0
     marks = {"done": "ok  ", "held": "hold", "failed": "FAIL"}
     delay = config.campaign.inter_send_delay
     for i, row in enumerate(rows):
+        # Re-read the cap between sends rather than trusting the estimate made
+        # before the batch. The pre-filter divides a recipient budget by the
+        # worst-case message width, which is an estimate; this is the ledger.
+        if mode == "send" and not args.dry_run:
+            used = sent_in_window(conn, mailbox.id)
+            if used >= cap:
+                print(f"  stop  cap reached mid-batch: {used}/{cap} recipients "
+                      f"in the last {CAP_WINDOW_HOURS}h")
+                break
         outcome, detail = send_one(conn, config, provider, mailbox, row, args.campaign,
                                    campaign_id, args.dry_run, mode=mode)
         print(f"  {marks[outcome]} {row['name'][:22]:<22} {detail[:80]}")

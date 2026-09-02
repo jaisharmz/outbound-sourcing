@@ -539,6 +539,19 @@ class CCConfig(Strict):
     by_domain: dict[str, CCRule] = Field(default_factory=dict)
     merge: bool = False
 
+    def max_recipients_per_message(self) -> int:
+        """The widest a single message can get: To plus the fattest CC/BCC rule.
+
+        Used to turn a recipient budget into a message count. It has to be the
+        worst case, not the typical one -- estimating low is how a batch of 17
+        walks through a cap with room for 10 left."""
+        rules = [self.default, *self.by_step.values(),
+                 *self.by_campaign.values(), *self.by_domain.values()]
+        widest = max((len(r.cc or []) + len(r.bcc or []) for r in rules), default=0)
+        if self.merge:
+            widest += len(self.default.cc or []) + len(self.default.bcc or [])
+        return 1 + widest
+
 
 # ---------------------------------------------------------------- dorks
 
