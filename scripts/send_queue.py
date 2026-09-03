@@ -149,6 +149,30 @@ def due(conn, campaign_id: int, limit: int, campaign: str | None = None) -> list
          ORDER BY c.confidence DESC LIMIT ?""", (campaign, campaign, limit)).fetchall()
 
 
+# Failures that prove no mail left: the name never resolved, or the connection
+# was refused, so no SMTP conversation began. Deliberately narrow and matched on
+# the recorded error string. A timeout or a broken pipe is NOT here -- those
+# happen mid-conversation, where Gmail may already have accepted the message,
+# and retrying one is how a stranger gets the same email twice.
+NEVER_LEFT = (
+    "gaierror",                              # DNS: the host never resolved
+    "nodename nor servname provided",        # macOS wording for the same
+    "name or service not known",             # Linux wording for the same
+    "temporary failure in name resolution",
+    "connectionrefusederror",
+    "no route to host",
+    "network is unreachable",
+)
+
+
+def never_left(error: str | None) -> bool:
+    """True only when the failure happened before any bytes reached the server."""
+    if not error:
+        return False
+    low = error.lower()
+    return any(marker in low for marker in NEVER_LEFT)
+
+
 _DRAFT_PROVIDERS: dict[str, object] = {}
 
 
@@ -246,20 +270,29 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
              key, utcnow(), utcnow()))
         if cur.rowcount == 0:
             prior = conn.execute(
-                "SELECT state, provider_message_id FROM messages WHERE idempotency_key=?",
-                (key,)).fetchone()
+                "SELECT state, provider_message_id, error FROM messages"
+                " WHERE idempotency_key=?", (key,)).fetchone()
             state = prior["state"] if prior else "queued"
             # A drafted row is the queue, not a collision. `send` exists to turn
             # reviewed drafts into sends, and the key is deliberately stable
             # across both -- so the second visit has to promote the row rather
             # than refuse it, or a drafted contact could never be sent at all.
-            # Every other state still refuses: 'sent' is done, 'sending' and
-            # 'drafting' belong to a run in flight, and an ambiguous 'failed' is
-            # never silently retried.
-            if mode != "send" or state != "drafted":
+            # 'sent' is done, and 'sending'/'drafting' belong to a run in flight.
+            #
+            # 'failed' splits. Most failures are ambiguous -- a broken pipe or a
+            # timeout mid-conversation may or may not have delivered -- and those
+            # are never silently retried. But a failure that happened before a
+            # socket ever opened cannot have delivered anything, and stranding it
+            # forever costs a real person. Five went that way on 2026-09-02 when
+            # the laptop lost DNS mid-slice.
+            retryable = state == "failed" and never_left(prior["error"] if prior else None)
+            if mode != "send" or not (state == "drafted" or retryable):
                 return "held", f"already {state} (idempotency key exists)"
-            conn.execute("UPDATE messages SET state='sending', sending_at=?"
-                         " WHERE idempotency_key=?", (utcnow(), key))
+            # Clear the old error: leaving it on a row that is being retried
+            # makes a later success read as a failure that somehow delivered.
+            conn.execute("UPDATE messages SET state='sending', sending_at=?,"
+                         " error=NULL, failed_at=NULL WHERE idempotency_key=?",
+                         (utcnow(), key))
 
     result = provider.create_draft(email) if mode == "draft" else provider.send(email)
     with transaction(conn):

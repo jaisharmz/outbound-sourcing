@@ -167,3 +167,75 @@ def test_an_unknown_draft_mailbox_falls_back_to_the_sender(monkeypatch, tmp_path
     assert outcome == "done", detail
     assert provider.deleted == ["<draft-1@test>"]
     send_queue._DRAFT_PROVIDERS.clear()
+
+
+def test_a_send_that_never_reached_the_server_is_retried(monkeypatch, tmp_path):
+    """DNS died mid-slice on 2026-09-02 and five contacts landed in `failed`,
+    where nothing ever retries them. But a name that never resolved means no
+    SMTP conversation began, so the message provably did not go out -- leaving
+    it stranded costs a real person for a wifi blip."""
+    from scripts import send_queue
+    from scripts.providers import SendResult
+    from tests.test_drafts import _Recorder, _fixture
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+
+    class Flaky(_Recorder):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        def send(self, email):
+            self.attempts += 1
+            if self.attempts == 1:
+                return SendResult(ok=False, error=(
+                    "gaierror: [Errno 8] nodename nor servname provided, or not known"))
+            return SendResult(ok=True, message_id="<sent-1@test>")
+
+    provider = Flaky()
+    outcome, _ = send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                                     dry_run=False, mode="send")
+    assert outcome == "failed"
+    assert conn.execute("SELECT state FROM messages").fetchone()["state"] == "failed"
+
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                                          dry_run=False, mode="send")
+    assert outcome == "done", detail
+    msg = conn.execute("SELECT state, error, failed_at FROM messages").fetchone()
+    assert msg["state"] == "sent"
+    assert msg["error"] is None and msg["failed_at"] is None, "stale failure must be cleared"
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_an_ambiguous_failure_is_never_retried(monkeypatch, tmp_path):
+    """A broken pipe happens mid-conversation, after Gmail may already have
+    accepted the message. Retrying one is how a stranger gets it twice."""
+    from scripts import send_queue
+    from scripts.providers import SendResult
+    from tests.test_drafts import _Recorder, _fixture
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+
+    class Broken(_Recorder):
+        def send(self, email):
+            self.calls.append("send")
+            return SendResult(ok=False, error="abort: socket error: [Errno 32] Broken pipe")
+
+    provider = Broken()
+    assert send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                               dry_run=False, mode="send")[0] == "failed"
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                                          dry_run=False, mode="send")
+    assert outcome == "held", detail
+    assert provider.calls == ["send"], "the provider must not be called a second time"
+
+
+def test_never_left_is_narrow():
+    from scripts.send_queue import never_left
+
+    assert never_left("gaierror: [Errno 8] nodename nor servname provided, or not known")
+    assert never_left("ConnectionRefusedError: [Errno 61] Connection refused")
+    assert not never_left("TimeoutError: [Errno 60] Operation timed out")
+    assert not never_left("abort: socket error: [Errno 32] Broken pipe")
+    assert not never_left("SMTPDataError: (550, b'5.4.5 Daily user sending limit exceeded')")
+    assert not never_left(None) and not never_left("")
