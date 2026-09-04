@@ -779,3 +779,61 @@ def test_a_server_without_move_falls_back_to_copy_and_expunge(monkeypatch):
     ok, detail = p.delete_draft("<a@test>")
     assert ok is True, detail
     assert fake.trashed == ["<a@test>"]
+
+
+def test_withdrawing_a_draft_leaves_the_contact_draftable_again(monkeypatch, tmp_path):
+    """`delete-drafts` releases the idempotency key; the send path's cancel keeps it.
+
+    Both end at state='cancelled' and the difference matters. In the send path a
+    draft is cancelled because the person was actually emailed, and the key has to
+    survive to stop a second one. Withdrawing a draft emails nobody, so keeping the
+    key would strand the contact forever: `send` refuses any key that already
+    exists, and the key is contact:step:template_hash, so an unchanged template
+    could never produce a new draft for them again.
+
+    Written after the first version marked 'cancelled' and kept the key, which
+    would have silently retired every contact whose draft was withdrawn.
+    """
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+
+    outcome, _ = send_queue.send_one(conn, config, provider, mailbox, row,
+                                     "startup", 1, dry_run=False, mode="draft")
+    assert outcome == "done"
+    msg = conn.execute("SELECT id, state, idempotency_key FROM messages").fetchone()
+    assert msg["state"] == "drafted" and msg["idempotency_key"]
+
+    # What `outbound delete-drafts --apply` does once Gmail confirms it is gone.
+    conn.execute("UPDATE messages SET state='cancelled', idempotency_key=NULL"
+                 " WHERE id=? AND state='drafted'", (msg["id"],))
+    conn.commit()
+
+    # The audit row survives, so the withdrawal is not invisible afterwards.
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+    outcome, detail = send_queue.send_one(conn, config, provider, mailbox, row,
+                                          "startup", 1, dry_run=False, mode="draft")
+    assert outcome == "done", f"withdrawn contact was not re-draftable: {detail}"
+    assert provider.calls == ["draft", "draft"]
+
+
+def test_a_withdrawn_draft_is_not_counted_as_contacted(monkeypatch, tmp_path):
+    """Withdrawing touches the message, never the person.
+
+    Nothing was sent, so the contact's status, the daily cap and reply tracking
+    all have to read exactly as they did before the draft was written.
+    """
+    from scripts import send_queue
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    provider = _Recorder()
+    send_queue.send_one(conn, config, provider, mailbox, row, "startup", 1,
+                        dry_run=False, mode="draft")
+
+    conn.execute("UPDATE messages SET state='cancelled', idempotency_key=NULL")
+    conn.commit()
+
+    assert conn.execute("SELECT status FROM contacts WHERE id=1").fetchone()[0] == "new"
+    assert conn.execute("SELECT COUNT(*) FROM mailbox_day").fetchone()[0] == 0

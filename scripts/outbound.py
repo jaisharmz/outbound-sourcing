@@ -1872,6 +1872,106 @@ def swap_stale_drafts_cmd(
         typer.secho(f"\ndeleted {rep.deleted} stale draft(s).", fg=typer.colors.GREEN)
 
 
+@app.command("delete-drafts")
+def delete_drafts_cmd(
+    company: Optional[str] = typer.Option(None, "--company",
+        help="only this account, matched the way `accounts` matches"),
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    apply: bool = typer.Option(False, "--apply", help="actually delete"),
+    config_path: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """Withdraw drafts that have not been sent, and forget they were written.
+
+    Scoped to drafts *this tool* created: each one is found by the Message-ID
+    recorded when it was written, so the operator's own unrelated drafts in the
+    same folder are never candidates. That is the whole safety property -- a
+    folder-wide delete would take personal mail with it.
+
+    A draft is deleted through the mailbox that wrote it rather than the one
+    currently sending, for the same reason the send path does it that way.
+
+    The row becomes 'cancelled', not 'queued': the contact was never written to,
+    so nothing about them changes, but the message that was prepared is spent.
+    Re-drafting is a fresh `send` run, which re-checks suppression and the gate.
+    """
+    from .send_queue import _draft_provider
+
+    cfg = _config(config_path)
+    conn = open_db(db)
+
+    where = ["m.state = 'drafted'"]
+    params: list = []
+    if company:
+        where.append("(a.name LIKE ? OR a.domain LIKE ?)")
+        params += [f"%{company}%", f"%{company}%"]
+    if campaign:
+        where.append("m.campaign_id = (SELECT id FROM campaigns WHERE name = ?)")
+        params.append(campaign)
+
+    rows = conn.execute(
+        "SELECT m.id, m.to_addr, m.subject, m.provider_message_id, m.mailbox_id,"
+        "       a.name AS company"
+        "  FROM messages m"
+        "  JOIN contacts c ON c.id = m.contact_id"
+        "  JOIN accounts a ON a.id = c.account_id"
+        f" WHERE {' AND '.join(where)} ORDER BY a.name, m.to_addr", tuple(params)).fetchall()
+
+    if not rows:
+        typer.echo("no drafts match")
+        return
+
+    by_company: dict[str, int] = {}
+    for r in rows:
+        by_company[r["company"]] = by_company.get(r["company"], 0) + 1
+    typer.echo(f"{len(rows)} draft(s) in scope, across {len(by_company)} account(s):\n")
+    for name, n in sorted(by_company.items(), key=lambda kv: -kv[1]):
+        typer.echo(f"  {n:>4}  {name}")
+
+    if not apply:
+        typer.secho("\ndry run -- nothing deleted. Re-run with --apply.",
+                    fg=typer.colors.YELLOW)
+        return
+
+    sending = cfg.mailboxes.enabled()[0]
+    provider = providers.build(sending, cfg.secrets())
+
+    deleted = 0
+    stranded: list[str] = []
+    for r in rows:
+        owner = _draft_provider(cfg, sending, provider, r["mailbox_id"])
+        gone, detail = owner.delete_draft(r["provider_message_id"])
+        if gone:
+            # Only after Gmail has been re-read and the draft is confirmed gone.
+            # Marking first and failing to delete is how a withdrawn draft ends
+            # up still sitting there for the operator to click.
+            #
+            # The idempotency key is released, which the send path's own
+            # 'cancelled' deliberately does not do. There the key must survive:
+            # it marks a draft superseded because the person was actually
+            # emailed, and holding the key is what stops a second one. Here
+            # nothing was sent, so keeping it would strand the contact
+            # permanently -- `send` refuses any key that already exists, and the
+            # key is contact+step+template, so an unchanged template could never
+            # produce a new draft for them again. Withdrawing a draft has to
+            # leave the contact exactly as re-draftable as they were before it
+            # was written. The row survives for the audit trail.
+            with transaction(conn):
+                conn.execute("UPDATE messages SET state='cancelled',"
+                             " idempotency_key=NULL"
+                             " WHERE id=? AND state='drafted'", (r["id"],))
+            deleted += 1
+        else:
+            stranded.append(f"{r['to_addr']}: {detail}")
+
+    typer.secho(f"\ndeleted {deleted} draft(s).", fg=typer.colors.GREEN)
+    if stranded:
+        typer.secho(f"{len(stranded)} still in Drafts -- left as 'drafted' so they "
+                    "are not forgotten:", fg=typer.colors.RED)
+        for s in stranded[:10]:
+            typer.echo(f"    {s}")
+
+
 @app.command("reconcile-bounces")
 def reconcile_bounces_cmd(
     since: str = typer.Option("01-Aug-2026", "--since",
@@ -1929,6 +2029,46 @@ def reconcile_bounces_cmd(
     n = B.clear(conn, rows)
     typer.secho(f"\ncleared {n} row(s); those contacts can be drafted again.",
                 fg=typer.colors.GREEN)
+
+
+@app.command("burst-plan")
+def burst_plan_cmd(
+    campaign: Optional[str] = typer.Option(None, "--campaign"),
+    mailbox: Optional[str] = typer.Option(None, "--mailbox"),
+    cap: Optional[int] = typer.Option(None, "--cap", help="override the rolling cap"),
+    anytime: bool = typer.Option(False, "--anytime",
+                                 help="ignore the sending window; quota only"),
+    config: Optional[str] = typer.Option(None, "--config"),
+    db: Optional[str] = typer.Option(None, "--db"),
+):
+    """When can the queue go out in bursts without tripping the rolling limit.
+
+    Reads what has already been sent and prints the earliest legal burst times.
+    Sends nothing.
+    """
+    from .burst_plan import plan, render
+    from .send_queue import DAYS, due
+    from .db import get_or_create_campaign
+
+    cfg = _config(config)
+    conn = open_db(db)
+    mb = cfg.mailboxes.get(mailbox) if mailbox else cfg.mailboxes.enabled()[0]
+    limit = cap or cfg.campaign.daily_cap
+    width = cfg.cc.max_recipients_per_message()
+
+    campaigns = [campaign] if campaign else ["frontier-lab", "startup"]
+    pending: list[int] = []
+    for name in campaigns:
+        cid = get_or_create_campaign(conn, name)
+        pending += [width] * len(due(conn, cid, 10_000, name))
+
+    w = cfg.campaign.sending_window
+    p = plan(conn, mb.id, cap=limit, pending=pending,
+             window_start=None if anytime else w.start,
+             window_end=None if anytime else w.end,
+             days=None if anytime else {DAYS[d] for d in w.days},
+             tz=cfg.campaign.timezone)
+    typer.echo(render(p, cfg.campaign.timezone))
 
 
 @app.command("drafts")
