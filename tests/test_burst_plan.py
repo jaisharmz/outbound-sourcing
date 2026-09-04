@@ -83,3 +83,24 @@ def test_the_sending_window_moves_a_burst_off_a_weekend(conn):
     local = p.batches[0].at.astimezone(__import__("zoneinfo").ZoneInfo("America/Los_Angeles"))
     assert local.weekday() == 0, f"expected Monday, got {local:%A %H:%M}"
     assert local.time() >= time(7, 0)
+
+
+def test_a_rejected_contact_does_not_come_back_to_the_review_gate(conn):
+    """`n` writes status='dropped'. If the gate ignores status, every rejection
+    returns on the next packet -- the 2026-09-04 big-tech run carried 67 new
+    people behind 166 already refused. Re-asking a considered `n` is how it
+    eventually becomes a tired `y`."""
+    from scripts.review import rows
+
+    conn.execute("INSERT INTO accounts (id, name, name_normalized, source, status,"
+                 " created_at, updated_at) VALUES (1,'Acme','acme','t','active','','')")
+    for cid, status in ((1, "new"), (2, "dropped")):
+        conn.execute("INSERT INTO contacts (id, account_id, name, first_name, last_name,"
+                     " title, email, email_domain, email_basis, confidence, status,"
+                     " approved, sendable, created_at, updated_at)"
+                     " VALUES (?,1,'A B','A','B','R',?, 'b.test','observed',0.9,?,0,1,'','')",
+                     (cid, f"c{cid}@b.test", status))
+    conn.commit()
+
+    got = [r["email"] for r in rows(conn)]
+    assert got == ["c1@b.test"], got

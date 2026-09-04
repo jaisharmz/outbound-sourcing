@@ -36,7 +36,14 @@ COLUMNS = [
 
 
 def rows(conn: sqlite3.Connection, campaign: str | None = None) -> list[sqlite3.Row]:
-    where = ["c.approved = 0", "c.sendable = 1", "a.validation_run = 0",
+    # `status = 'dropped'` is what a reviewer's `n` writes (see the reject path
+    # below), and it has to be excluded here or every rejection comes straight
+    # back to the gate. It did: the 2026-09-04 big-tech packet carried 67 new
+    # people and 166 already refused, so 71% of the reading was a decision the
+    # operator had already made -- and re-asking is how a considered `n` turns
+    # into a tired `y`.
+    where = ["c.approved = 0", "c.sendable = 1", "c.status != 'dropped'",
+             "a.validation_run = 0",
              "a.status NOT IN ('excluded','excluded_region','merged')"]
     params: list = []
     if campaign:
