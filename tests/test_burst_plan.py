@@ -104,3 +104,53 @@ def test_a_rejected_contact_does_not_come_back_to_the_review_gate(conn):
 
     got = [r["email"] for r in rows(conn)]
     assert got == ["c1@b.test"], got
+
+
+def test_a_failed_draft_can_be_written_again(monkeypatch, tmp_path):
+    """Drafting reaches nobody, so a failed draft is safe to retry -- the worst
+    case is a second draft, visible in the folder and deletable. Refusing
+    strands the contact instead: one Microsoft address sat unwritable from
+    2026-09-03 on an `IMAP APPEND returned NO: System Error`, which is Gmail
+    having a bad moment rather than a decision about the mail."""
+    from scripts import send_queue
+    from scripts.providers import SendResult
+    from tests.test_drafts import _Recorder, _fixture
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+
+    class Flaky(_Recorder):
+        def __init__(self):
+            super().__init__()
+            self.tries = 0
+
+        def create_draft(self, email):
+            self.tries += 1
+            if self.tries == 1:
+                return SendResult(ok=False, error=(
+                    "IMAP APPEND to '[Gmail]/Drafts' returned NO: [b'System Error (Failure)']"))
+            return SendResult(ok=True, message_id="<draft-1@test>")
+
+    p = Flaky()
+    assert send_queue.send_one(conn, config, p, mailbox, row, "startup", 1,
+                               dry_run=False, mode="draft")[0] == "failed"
+    outcome, detail = send_queue.send_one(conn, config, p, mailbox, row, "startup", 1,
+                                          dry_run=False, mode="draft")
+    assert outcome == "done", detail
+    msg = conn.execute("SELECT state, error, failed_at FROM messages").fetchone()
+    assert msg["state"] == "drafted" and msg["error"] is None and msg["failed_at"] is None
+    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
+
+
+def test_drafting_still_refuses_a_contact_already_sent(monkeypatch, tmp_path):
+    """Retrying failed drafts must not become 'retry anything'. A sent contact
+    is done, and re-drafting one puts a duplicate in front of the operator."""
+    from scripts import send_queue
+    from tests.test_drafts import _Recorder, _fixture
+
+    row, conn, config, mailbox = _fixture(tmp_path, monkeypatch)
+    p = _Recorder()
+    send_queue.send_one(conn, config, p, mailbox, row, "startup", 1,
+                        dry_run=False, mode="send")
+    outcome, detail = send_queue.send_one(conn, config, p, mailbox, row, "startup", 1,
+                                          dry_run=False, mode="draft")
+    assert outcome == "held" and "sent" in detail

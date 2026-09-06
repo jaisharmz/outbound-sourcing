@@ -286,13 +286,28 @@ def send_one(conn, config: Config, provider, mailbox, row, campaign: str,
             # forever costs a real person. Five went that way on 2026-09-02 when
             # the laptop lost DNS mid-slice.
             retryable = state == "failed" and never_left(prior["error"] if prior else None)
-            if mode != "send" or not (state == "drafted" or retryable):
+            # A failed *draft* is retryable whatever the cause, and that is a
+            # much weaker claim than retrying a send. Drafting reaches nobody,
+            # so the worst case is a second draft -- visible in the folder and
+            # deletable -- while refusing leaves a contact that can never be
+            # written to at all. One Microsoft address sat stranded from
+            # 2026-09-03 on `IMAP APPEND returned NO: System Error`, which is
+            # Gmail having a bad moment, not a decision about the mail.
+            #
+            # The old error is cleared on every retry: leaving it on a row that
+            # then succeeds makes the success read as a failure that somehow
+            # delivered.
+            if mode == "draft":
+                if state != "failed":
+                    return "held", f"already {state} (idempotency key exists)"
+                conn.execute("UPDATE messages SET state='drafting', drafted_at=NULL,"
+                             " error=NULL, failed_at=NULL WHERE idempotency_key=?", (key,))
+            elif state == "drafted" or retryable:
+                conn.execute("UPDATE messages SET state='sending', sending_at=?,"
+                             " error=NULL, failed_at=NULL WHERE idempotency_key=?",
+                             (utcnow(), key))
+            else:
                 return "held", f"already {state} (idempotency key exists)"
-            # Clear the old error: leaving it on a row that is being retried
-            # makes a later success read as a failure that somehow delivered.
-            conn.execute("UPDATE messages SET state='sending', sending_at=?,"
-                         " error=NULL, failed_at=NULL WHERE idempotency_key=?",
-                         (utcnow(), key))
 
     result = provider.create_draft(email) if mode == "draft" else provider.send(email)
     with transaction(conn):
