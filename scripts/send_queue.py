@@ -390,6 +390,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-reconcile", action="store_true",
                     help="skip the Sent-folder scan. Only safe when another run in the "
                          "same slice has already done it.")
+    ap.add_argument("--burst", action="store_true",
+                    help="send seconds apart instead of minutes. The cap still applies; "
+                         "only the pacing between messages changes.")
     ap.add_argument("--config"); ap.add_argument("--db")
     args = ap.parse_args(argv)
     mode = "send" if args.send else "draft"
@@ -477,6 +480,12 @@ def main(argv: list[str] | None = None) -> int:
     done = failed = held = 0
     marks = {"done": "ok  ", "held": "hold", "failed": "FAIL"}
     delay = config.campaign.inter_send_delay
+    if args.burst:
+        # A burst deliberately drops the human-looking pacing: the operator wants
+        # the batch to land together. The cap is untouched -- that is what keeps
+        # Gmail from refusing -- but nothing here disguises the shape any more,
+        # and a receiving filter reads shape as well as volume.
+        delay = delay.model_copy(update={"min_seconds": 1, "max_seconds": 3})
     for i, row in enumerate(rows):
         # Re-read the cap between sends rather than trusting the estimate made
         # before the batch. The pre-filter divides a recipient budget by the

@@ -1754,6 +1754,8 @@ def send_cmd(
     no_reconcile: bool = typer.Option(
         False, "--no-reconcile",
         help="skip the Sent-folder scan; only safe if something else just ran it"),
+    burst: bool = typer.Option(
+        False, "--burst", help="send seconds apart instead of minutes; cap still applies"),
     config: Optional[str] = typer.Option(None, "--config"),
     db: Optional[str] = typer.Option(None, "--db"),
 ):
@@ -1778,6 +1780,8 @@ def send_cmd(
         argv.append("--ignore-window")
     if no_reconcile:
         argv.append("--no-reconcile")
+    if burst:
+        argv.append("--burst")
     raise typer.Exit(send_main(argv))
 
 
